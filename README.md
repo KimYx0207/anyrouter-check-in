@@ -2,7 +2,9 @@
 
 多平台多账号自动签到工具，支持所有基于 NewAPI、OneAPI 的平台。内置支持 AnyRouter 与 AgentRouter，其他平台可根据文档自定义配置。
 
-支持 Claude Sonnet 4.5、GPT-5-Codex、Claude Code 百万上下文、Gemini-2.5-Pro 等模型。[点击注册 AnyRouter](https://anyrouter.top/register?aff=gSsN)（限时送 100 美金）
+支持 Claude Sonnet 4.5、GPT-5-Codex、Claude Code 百万上下文、Gemini-2.5-Pro 等模型。
+
+📢 **注册链接**：[AnyRouter](https://anyrouter.top/register?aff=0FzF)（限时送 100 美金） | [AgentRouter](https://agentrouter.org/register?aff=rLco)
 
 **如果本项目对你有帮助，请点个 Star，感谢支持！⭐**
 
