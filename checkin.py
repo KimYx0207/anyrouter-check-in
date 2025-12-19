@@ -66,7 +66,7 @@ def parse_cookies(cookies_data):
 	return {}
 
 
-async def get_waf_cookies_and_trigger_login(account_name: str, domain: str, login_url: str, required_cookies: list[str], user_session: str):
+async def get_waf_cookies_and_trigger_login(account_name: str, domain: str, login_url: str, required_cookies: list[str], user_session: str, api_user: str, api_user_key: str):
 	"""使用 Playwright 获取 WAF cookies 并触发真实登录以完成签到"""
 	print(f'[浏览器] {account_name}: 正在启动浏览器并模拟登录...')
 
@@ -87,6 +87,14 @@ async def get_waf_cookies_and_trigger_login(account_name: str, domain: str, logi
 					'--no-sandbox',
 				],
 			)
+
+			# 隐藏webdriver标识
+			await context.add_init_script("""
+				Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+				window.navigator.chrome = {runtime: {}};
+				Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+				Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
+			""")
 
 			page = await context.new_page()
 
@@ -133,26 +141,47 @@ async def get_waf_cookies_and_trigger_login(account_name: str, domain: str, logi
 					'sameSite': 'Lax'
 				}])
 
-				# 访问首页
+				# 监听网络请求
+				api_calls = []
+				def log_request(request):
+					if '/api/' in request.url:
+						api_calls.append(f"{request.method} {request.url}")
+						print(f'[API请求] {request.method} {request.url}')
+
+				page.on('request', log_request)
+
+				# 第一步：清除所有cookies（模拟退出登录）
+				print(f'[退出] {account_name}: 清除所有cookies（模拟退出）...')
+				await context.clear_cookies()
+				await page.wait_for_timeout(1000)
+
+				# 第二步：重新设置session cookie（模拟重新登录）
+				print(f'[登录] {account_name}: 重新设置session（模拟重新登录）...')
+				await context.add_cookies([{
+					'name': 'session',
+					'value': user_session,
+					'domain': cookie_domain,
+					'path': '/',
+					'httpOnly': True,
+					'secure': True,
+					'sameSite': 'Lax'
+				}])
+
+				# 第三步：访问首页（重新登录后，触发签到！）
+				print(f'[签到] {account_name}: 访问首页触发签到...')
 				await page.goto(domain, wait_until='networkidle')
-				await page.wait_for_timeout(2000)
+				print(f'[等待] {account_name}: 在首页停留，等待签到逻辑执行（15秒）...')
+				await page.wait_for_timeout(15000)
 
-				# 访问OAuth回调页面（关键步骤）
-				print(f'[登录] {account_name}: 访问控制台触发签到...')
-				try:
-					await page.goto(f'{domain}/console/token', wait_until='networkidle', timeout=10000)
-					await page.wait_for_timeout(2000)
-				except Exception:
-					pass
+				if api_calls:
+					print(f'[信息] {account_name}: 捕获到 {len(api_calls)} 个API调用')
+					for call in api_calls:
+						if 'user/self' in call:
+							print(f'[关键] {account_name}: 检测到 /api/user/self 调用！')
+				else:
+					print(f'[警告] {account_name}: 未捕获到任何API调用！')
 
-				# 访问控制台首页（触发/api/user/self调用）
-				try:
-					await page.goto(f'{domain}/console', wait_until='networkidle', timeout=10000)
-					await page.wait_for_timeout(3000)
-				except Exception:
-					pass
-
-				print(f'[成功] {account_name}: 登录流程完成')
+				print(f'[成功] {account_name}: 登出重登流程完成')
 
 				await context.close()
 
@@ -186,7 +215,7 @@ def get_user_info(client, headers, user_info_url: str):
 		return {'success': False, 'error': f'获取用户信息失败: {str(e)[:50]}...'}
 
 
-async def prepare_cookies(account_name: str, provider_config, user_cookies: dict) -> dict | None:
+async def prepare_cookies(account_name: str, provider_config, user_cookies: dict, api_user: str) -> dict | None:
 	"""准备请求所需的 cookies（可能包含 WAF cookies），并触发真实登录完成签到"""
 	waf_cookies = {}
 
@@ -204,7 +233,9 @@ async def prepare_cookies(account_name: str, provider_config, user_cookies: dict
 			provider_config.domain,
 			login_url,
 			provider_config.waf_cookie_names,
-			user_session
+			user_session,
+			api_user,
+			provider_config.api_user_key
 		)
 		if not waf_cookies:
 			print(f'[失败] {account_name}: 无法获取 WAF cookies 或触发登录')
@@ -268,7 +299,7 @@ async def check_in_account(account: AccountConfig, account_index: int, app_confi
 		print(f'[失败] {account_name}: 配置格式无效')
 		return False, None
 
-	all_cookies = await prepare_cookies(account_name, provider_config, user_cookies)
+	all_cookies = await prepare_cookies(account_name, provider_config, user_cookies, account.api_user)
 	if not all_cookies:
 		return False, None
 
