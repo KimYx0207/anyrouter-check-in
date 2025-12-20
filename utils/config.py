@@ -186,6 +186,9 @@ class AccountConfig:
 	api_user: str
 	provider: str = 'anyrouter'
 	name: str | None = None
+	username: str | None = None  # 用于需要登录触发签到的 provider
+	password: str | None = None  # 用于需要登录触发签到的 provider
+	oauth_provider: str | None = None  # OAuth 提供商（github/google/linuxdo）
 
 	@classmethod
 	def from_dict(cls, data: dict, index: int) -> 'AccountConfig':
@@ -193,7 +196,23 @@ class AccountConfig:
 		provider = data.get('provider', 'anyrouter')
 		name = data.get('name', f'Account {index + 1}')
 
-		return cls(cookies=data['cookies'], api_user=data['api_user'], provider=provider, name=name if name else None)
+		return cls(
+			cookies=data['cookies'],
+			api_user=data['api_user'],
+			provider=provider,
+			name=name if name else None,
+			username=data.get('username'),
+			password=data.get('password'),
+			oauth_provider=data.get('oauth_provider'),
+		)
+
+	def has_login_credentials(self) -> bool:
+		"""是否有登录凭据"""
+		return bool(self.username and self.password)
+
+	def has_oauth_config(self) -> bool:
+		"""是否配置了 OAuth 登录"""
+		return bool(self.oauth_provider)
 
 	def get_display_name(self, index: int) -> str:
 		"""获取显示名称"""

@@ -10,6 +10,80 @@
 
 ---
 
+## 更新日志
+
+### v2.4.0 (2025-12-21)
+
+- ✨ **新增 HTTP 签到方式**
+  - 新增 `trigger_signin_via_http()` 函数，使用 httpx 直接发送请求
+  - OAuth 账号优先使用 HTTP 方式签到，无需启动浏览器
+  - 失败时自动回退到 Playwright 浏览器方式
+- 🚀 **GitHub Actions 完全支持**
+  - HTTP 签到无浏览器依赖，可在任何 CI/CD 环境运行
+  - 解决了 GitHub Actions 中无法使用 OAuth 登录的问题
+- 🔧 **签到流程优化**
+  - 简化 AgentRouter 签到：访问登录页 + session cookie → 自动重定向 → 签到触发
+  - 减少不必要的浏览器启动，提升执行效率
+
+### v2.3.0 (2025-12-20)
+
+- 🧹 **项目结构优化**
+  - 运行时数据统一存放到 `data/` 目录（balance_hash.txt、signin_history.json、task_run.log）
+  - 移除冗余的单文件目录（config/、docs/）
+  - `.env.template` 和 `SECURITY_CHECKLIST.md` 移至根目录
+  - 简化 `.gitignore`，整个 `data/` 目录被忽略
+- 🔧 **代码清理**
+  - 删除所有缓存目录（.pytest_cache、.ruff_cache、__pycache__）
+  - 更新 `constants.py` 中的文件路径常量
+
+### v2.2.0 (2025-12-18)
+
+- 🔧 **修复定时任务执行问题**
+  - 使用 uv 完整路径，解决系统环境变量找不到命令的问题
+  - 启用批处理延迟变量扩展，正确处理错误码
+  - 添加详细的诊断日志和环境检查
+- ✨ **优化签到机制**
+  - 修正 anyrouter 配置：改为登录自动签到模式（与 agentrouter 一致）
+  - 增强浏览器模拟：访问 `/console/token` 和 `/console` 页面触发真实签到
+  - 修改请求 Referer 为 `/console/token`，模拟 OAuth 回调
+- 📊 **增加余额变化监控**
+  - 签到前后自动对比余额变化
+  - 显示详细的余额增减信息
+  - 优化通知触发逻辑
+- 🧹 **代码优化**
+  - 简化日志输出，移除冗余调试信息
+  - 清理临时测试文件
+  - 改进错误处理和异常捕获
+
+### v2.1.0 (2025-12-16)
+
+- 🎨 重组项目文件结构，提升可维护性
+  - 配置文件移至 `config/` 目录
+  - 脚本文件移至 `scripts/` 目录
+  - 文档文件移至 `docs/` 目录
+  - 测试文件移至 `tests/` 目录
+- 🗑️ 删除冗余脚本，只保留最优方案
+- 📝 优化 README 文档，添加快速使用指南
+
+### v2.0.0 (2025-12-16)
+
+- ✨ 新增本地运行支持
+- ✨ 全面汉化界面
+- 🐛 修复 JSON 多行解析问题
+- 🐛 修复 AgentRouter 签到逻辑错误
+- 🐛 修复环境变量加载顺序问题（先加载 dotenv 再导入 notify）
+- 📝 完善文档和配置说明
+- 🔧 新增 Windows 定时任务自动配置脚本
+
+### v1.0.0
+
+- 🎉 初始版本
+- ✅ GitHub Actions 支持
+- ✅ 多账号签到
+- ✅ WAF 绕过
+
+---
+
 ## 📁 项目结构
 
 ```
@@ -19,6 +93,8 @@ anyrouter-check-in/
 ├── pyproject.toml            项目依赖
 ├── .env.template             配置模板
 ├── SECURITY_CHECKLIST.md     安全检查清单
+├── .claude/                  Claude Code 配置
+│   └── CLAUDE.md             AI 助手指令（含 commit 前检查）
 ├── scripts/                  脚本文件夹
 │   ├── run_checkin.bat       运行脚本
 │   └── setup_task.bat        一键设置定时任务
@@ -28,7 +104,7 @@ anyrouter-check-in/
 │   ├── test_notify.py        通知模块测试
 │   └── test_result.py        结果模块测试
 ├── utils/                    工具模块
-│   ├── browser.py            浏览器自动化
+│   ├── browser.py            浏览器自动化 + HTTP 签到
 │   ├── config.py             配置管理
 │   ├── constants.py          常量定义
 │   ├── notify.py             通知模块
@@ -360,43 +436,6 @@ CUSTOM_SMTP_SERVER=smtp.gmail.com:587
 
 ---
 
-## 项目文件说明
-
-```
-anyrouter-check-in/
-├── checkin.py              主程序
-├── providers.json          Provider 配置（可自定义）
-├── pyproject.toml          项目配置
-├── uv.lock                 依赖锁定
-├── .env.template           配置模板
-├── SECURITY_CHECKLIST.md   安全检查清单
-├── .env                    本地配置（敏感，不提交）
-│
-├── scripts/                脚本文件夹
-│   ├── run_checkin.bat     运行脚本
-│   └── setup_task.bat      一键设置定时任务
-│
-├── tests/                  测试文件夹
-│   ├── test_browser.py     浏览器模块测试
-│   ├── test_config.py      配置验证脚本
-│   ├── test_notify.py      通知模块测试
-│   └── test_result.py      结果模块测试
-│
-├── utils/                  工具模块
-│   ├── browser.py          浏览器自动化（WAF 绕过）
-│   ├── config.py           配置管理
-│   ├── constants.py        常量定义
-│   ├── notify.py           通知模块
-│   └── result.py           签到结果管理
-│
-└── data/                   运行时数据（自动生成，已忽略）
-    ├── balance_hash.txt    余额哈希
-    ├── signin_history.json 签到历史
-    └── task_run.log        运行日志
-```
-
----
-
 ## 测试验证
 
 运行配置测试脚本，验证配置是否正确：
@@ -535,67 +574,6 @@ uv run pytest tests/
 # 代码格式化
 uv run ruff check .
 ```
-
----
-
-## 更新日志
-
-### v2.3.0 (2025-12-20)
-
-- 🧹 **项目结构优化**
-  - 运行时数据统一存放到 `data/` 目录（balance_hash.txt、signin_history.json、task_run.log）
-  - 移除冗余的单文件目录（config/、docs/）
-  - `.env.template` 和 `SECURITY_CHECKLIST.md` 移至根目录
-  - 简化 `.gitignore`，整个 `data/` 目录被忽略
-- 🔧 **代码清理**
-  - 删除所有缓存目录（.pytest_cache、.ruff_cache、__pycache__）
-  - 更新 `constants.py` 中的文件路径常量
-
-### v2.2.0 (2025-12-18)
-
-- 🔧 **修复定时任务执行问题**
-  - 使用 uv 完整路径，解决系统环境变量找不到命令的问题
-  - 启用批处理延迟变量扩展，正确处理错误码
-  - 添加详细的诊断日志和环境检查
-- ✨ **优化签到机制**
-  - 修正 anyrouter 配置：改为登录自动签到模式（与 agentrouter 一致）
-  - 增强浏览器模拟：访问 `/console/token` 和 `/console` 页面触发真实签到
-  - 修改请求 Referer 为 `/console/token`，模拟 OAuth 回调
-- 📊 **增加余额变化监控**
-  - 签到前后自动对比余额变化
-  - 显示详细的余额增减信息
-  - 优化通知触发逻辑
-- 🧹 **代码优化**
-  - 简化日志输出，移除冗余调试信息
-  - 清理临时测试文件
-  - 改进错误处理和异常捕获
-
-### v2.1.0 (2025-12-16)
-
-- 🎨 重组项目文件结构，提升可维护性
-  - 配置文件移至 `config/` 目录
-  - 脚本文件移至 `scripts/` 目录
-  - 文档文件移至 `docs/` 目录
-  - 测试文件移至 `tests/` 目录
-- 🗑️ 删除冗余脚本，只保留最优方案
-- 📝 优化 README 文档，添加快速使用指南
-
-### v2.0.0 (2025-12-16)
-
-- ✨ 新增本地运行支持
-- ✨ 全面汉化界面
-- 🐛 修复 JSON 多行解析问题
-- 🐛 修复 AgentRouter 签到逻辑错误
-- 🐛 修复环境变量加载顺序问题（先加载 dotenv 再导入 notify）
-- 📝 完善文档和配置说明
-- 🔧 新增 Windows 定时任务自动配置脚本
-
-### v1.0.0
-
-- 🎉 初始版本
-- ✅ GitHub Actions 支持
-- ✅ 多账号签到
-- ✅ WAF 绕过
 
 ---
 

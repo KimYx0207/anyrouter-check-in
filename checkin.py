@@ -23,7 +23,7 @@ from tenacity import (
 	wait_exponential,
 )
 
-from utils.browser import clear_waf_cookie_cache, get_cached_waf_cookies, get_waf_cookies_and_trigger_signin
+from utils.browser import clear_waf_cookie_cache, get_cached_waf_cookies, get_waf_cookies_and_trigger_signin, perform_real_login_signin, perform_oauth_signin_with_chrome, trigger_signin_via_http
 from utils.config import AccountConfig, AppConfig, ProviderConfig, load_accounts_config
 from utils.constants import (
 	CHROME_USER_AGENT,
@@ -372,15 +372,84 @@ async def process_single_account(
 			error='cookies 格式无效'
 		)
 
-	# 准备 cookies（获取 WAF cookies）
-	all_cookies = await prepare_cookies_with_waf(account_name, provider, user_cookies, account.api_user)
-	if not all_cookies:
-		return SigninResult(
-			account_key=account_key,
+	# 判断签到方式
+	needs_oauth_login = not provider.needs_manual_check_in() and account.has_oauth_config()
+	needs_real_login = not provider.needs_manual_check_in() and account.has_login_credentials()
+
+	if needs_oauth_login:
+		# 使用 HTTP 请求触发签到（优先，适用于 GitHub Actions）
+		print(f'[信息] {account_name}: 使用 HTTP 请求触发签到（OAuth 账号）')
+		login_url = f'{provider.domain}{provider.login_path}'
+
+		result = await trigger_signin_via_http(
 			account_name=account_name,
-			status=SigninStatus.ERROR,
-			error='无法获取 WAF cookies'
+			domain=provider.domain,
+			login_url=login_url,
+			user_cookies=user_cookies,
+			api_user=account.api_user,
+			api_user_key=provider.api_user_key,
+			log_fn=print
 		)
+
+		if result.success:
+			# HTTP 签到成功
+			all_cookies = user_cookies
+		else:
+			# HTTP 失败，尝试浏览器方式（仅本地开发）
+			print(f'[回退] {account_name}: HTTP 签到失败，尝试浏览器方式...')
+			result = await perform_oauth_signin_with_chrome(
+				account_name=account_name,
+				domain=provider.domain,
+				login_url=login_url,
+				oauth_provider=account.oauth_provider,
+				log_fn=print
+			)
+
+			if not result.success:
+				return SigninResult(
+					account_key=account_key,
+					account_name=account_name,
+					status=SigninStatus.ERROR,
+					error=result.error or 'OAuth 登录失败'
+				)
+
+			all_cookies = user_cookies
+
+	elif needs_real_login:
+		# 使用真正的登录流程触发签到（用户名密码）
+		print(f'[信息] {account_name}: 使用用户名密码登录触发签到')
+		login_url = f'{provider.domain}{provider.login_path}'
+
+		result = await perform_real_login_signin(
+			account_name=account_name,
+			domain=provider.domain,
+			login_url=login_url,
+			username=account.username,
+			password=account.password,
+			required_cookies=provider.waf_cookie_names or [],
+			log_fn=print
+		)
+
+		if not result.success:
+			return SigninResult(
+				account_key=account_key,
+				account_name=account_name,
+				status=SigninStatus.ERROR,
+				error=result.error or '登录失败'
+			)
+
+		# 登录成功后，使用获取的 cookies 查询余额
+		all_cookies = {**result.waf_cookies, **user_cookies}
+	else:
+		# 准备 cookies（获取 WAF cookies）
+		all_cookies = await prepare_cookies_with_waf(account_name, provider, user_cookies, account.api_user)
+		if not all_cookies:
+			return SigninResult(
+				account_key=account_key,
+				account_name=account_name,
+				status=SigninStatus.ERROR,
+				error='无法获取 WAF cookies'
+			)
 
 	# 使用异步 HTTP 客户端（context manager 自动关闭）
 	async with httpx.AsyncClient(http2=True, timeout=HTTP_TIMEOUT_SECONDS) as client:
@@ -411,8 +480,15 @@ async def process_single_account(
 					print(f'[签到后] {user_info_after.display}')
 					current_balance = user_info_after.quota
 					user_info = user_info_after
+		elif needs_oauth_login:
+			# OAuth 登录已经在上面完成，签到已触发
+			print(f'[信息] {account_name}: 签到已通过 HTTP/浏览器触发完成')
+		elif needs_real_login:
+			# 真正登录已经在上面完成，签到已触发
+			print(f'[信息] {account_name}: 签到已通过用户名密码登录触发完成')
 		else:
-			print(f'[信息] {account_name}: 签到已自动完成（通过访问首页触发）')
+			# 没有登录凭据，通过浏览器模拟登录触发签到（已在 prepare_cookies_with_waf 中完成）
+			print(f'[信息] {account_name}: 签到已通过浏览器模拟登录触发')
 
 		# 创建签到结果
 		result = create_signin_result(
