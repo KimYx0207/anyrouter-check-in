@@ -56,7 +56,7 @@ echo [信息] .env文件: %PROJECT_ROOT%\.env
 
 REM 运行签到脚本
 echo.
-echo [信息] 正在运行签到脚本...
+echo [信息] Running checkin script...
 "%UV_PATH%" run checkin.py
 set RUN_RESULT=%errorlevel%
 
@@ -104,7 +104,7 @@ echo [信息] .env文件: %PROJECT_ROOT%\.env
 echo.
 
 REM 运行签到脚本（Python会自己写UTF-8日志）
-echo [信息] 正在运行签到脚本...
+echo [信息] Running checkin script...
 "%UV_PATH%" run checkin.py
 
 exit /b %errorlevel%
