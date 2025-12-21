@@ -26,6 +26,7 @@ DATA_DIR = 'data'
 BALANCE_HASH_FILE = f'{DATA_DIR}/balance_hash.txt'
 SIGNIN_HISTORY_FILE = f'{DATA_DIR}/signin_history.json'
 LOG_FILE = f'{DATA_DIR}/task_run.log'
+DATABASE_FILE = f'{DATA_DIR}/checkin.db'
 
 # Gotify 优先级范围
 GOTIFY_PRIORITY_MIN = 1

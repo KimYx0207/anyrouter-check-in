@@ -707,7 +707,7 @@ async def perform_oauth_signin_with_chrome(
 				log(f'[信息] {account_name}: 使用 Playwright 独立配置目录...')
 				if not profile_exists:
 					log(f'[首次] {account_name}: 首次运行，需要在浏览器中登录 GitHub')
-					log(f'[提示] 请在打开的浏览器中完成 GitHub 登录，后续运行将自动使用此登录状态')
+					log('[提示] 请在打开的浏览器中完成 GitHub 登录，后续运行将自动使用此登录状态')
 
 				context = await p.chromium.launch_persistent_context(
 					user_data_dir=str(PLAYWRIGHT_USER_DATA_DIR),
@@ -873,6 +873,158 @@ async def perform_oauth_signin_with_chrome(
 
 
 # ============ HTTP 签到（无浏览器依赖） ============
+
+
+async def try_direct_http_signin(
+	account_name: str,
+	domain: str,
+	sign_in_path: str,
+	user_info_path: str,
+	user_cookies: dict[str, str],
+	api_user: str,
+	api_user_key: str = 'new-api-user',
+	log_fn: Callable[[str], None] | None = None
+) -> BrowserResult:
+	"""尝试直接通过 HTTP 调用签到 API（不获取 WAF cookies）
+
+	适用于 WAF 不严格或已有有效 cookies 的情况。
+	如果被 WAF 拦截（返回非 JSON），调用方应回退到浏览器方式。
+
+	Args:
+	    account_name: 账号名称（用于日志）
+	    domain: 目标域名
+	    sign_in_path: 签到 API 路径（如 /api/user/sign_in）
+	    user_info_path: 用户信息 API 路径（如 /api/user/self）
+	    user_cookies: 用户 cookies（包含 session）
+	    api_user: API 用户标识
+	    api_user_key: API 用户请求头名称
+	    log_fn: 日志输出函数
+
+	Returns:
+	    BrowserResult: success=True 表示签到成功，error 包含失败原因
+	"""
+
+	def log(msg: str) -> None:
+		if log_fn:
+			log_fn(msg)
+		else:
+			print(msg)
+
+	log(f'[HTTP直连] {account_name}: 尝试直接调用签到 API（无 WAF cookies）...')
+
+	api_calls: list[str] = []
+
+	try:
+		async with httpx.AsyncClient(
+			http2=True,
+			timeout=HTTP_TIMEOUT_SECONDS,
+			follow_redirects=True,
+			verify=True
+		) as client:
+			# 设置 cookies
+			for name, value in user_cookies.items():
+				client.cookies.set(name, value, domain=urlparse(domain).netloc)
+
+			# 构建请求头
+			headers = {
+				'User-Agent': CHROME_USER_AGENT,
+				'Accept': 'application/json, text/plain, */*',
+				'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+				'Accept-Encoding': 'gzip, deflate, br',
+				'Content-Type': 'application/json',
+				'Origin': domain,
+				'Referer': f'{domain}/console/token',
+				'Connection': 'keep-alive',
+				'X-Requested-With': 'XMLHttpRequest',
+				api_user_key: api_user,
+			}
+
+			# 第一步：尝试获取用户信息（验证 session 是否有效）
+			user_info_url = f'{domain}{user_info_path}'
+			log(f'[HTTP直连] {account_name}: 验证 session 有效性...')
+
+			user_response = await client.get(user_info_url, headers=headers)
+			api_calls.append(f'GET {user_info_url} -> {user_response.status_code}')
+
+			# 检查是否被 WAF 拦截（返回非 JSON）
+			try:
+				user_data = user_response.json()
+			except Exception:
+				log(f'[WAF拦截] {account_name}: 返回非 JSON 响应，需要获取 WAF cookies')
+				return BrowserResult(
+					success=False,
+					waf_cookies={},
+					api_calls=api_calls,
+					error='WAF_BLOCKED'  # 特殊标记，表示需要回退到浏览器
+				)
+
+			# 检查 session 是否有效
+			if not user_data.get('success'):
+				error_msg = user_data.get('message', 'session 无效')
+				log(f'[失败] {account_name}: session 无效 - {error_msg}')
+				return BrowserResult(
+					success=False,
+					waf_cookies={},
+					api_calls=api_calls,
+					error=f'SESSION_INVALID: {error_msg}'
+				)
+
+			log(f'[HTTP直连] {account_name}: session 有效，执行签到...')
+
+			# 第二步：调用签到 API
+			sign_in_url = f'{domain}{sign_in_path}'
+			sign_response = await client.post(sign_in_url, headers=headers)
+			api_calls.append(f'POST {sign_in_url} -> {sign_response.status_code}')
+
+			# 检查签到响应
+			try:
+				sign_data = sign_response.json()
+			except Exception:
+				log(f'[WAF拦截] {account_name}: 签到 API 返回非 JSON 响应')
+				return BrowserResult(
+					success=False,
+					waf_cookies={},
+					api_calls=api_calls,
+					error='WAF_BLOCKED'
+				)
+
+			# 检查签到结果
+			if sign_data.get('ret') == 1 or sign_data.get('code') == 0 or sign_data.get('success'):
+				msg = sign_data.get('msg', sign_data.get('message', ''))
+				log(f'[成功] {account_name}: HTTP 直连签到成功！{msg}')
+				return BrowserResult(
+					success=True,
+					waf_cookies={},
+					api_calls=api_calls
+				)
+			else:
+				error_msg = sign_data.get('msg', sign_data.get('message', '未知错误'))
+				log(f'[失败] {account_name}: 签到失败 - {error_msg}')
+				return BrowserResult(
+					success=False,
+					waf_cookies={},
+					api_calls=api_calls,
+					error=error_msg
+				)
+
+	except httpx.HTTPStatusError as e:
+		error_msg = f'HTTP 错误: {e.response.status_code}'
+		log(f'[失败] {account_name}: {error_msg}')
+		return BrowserResult(
+			success=False,
+			waf_cookies={},
+			api_calls=api_calls,
+			error=error_msg
+		)
+	except Exception as e:
+		error_msg = str(e)[:100]
+		log(f'[失败] {account_name}: HTTP 请求失败: {error_msg}')
+		return BrowserResult(
+			success=False,
+			waf_cookies={},
+			api_calls=api_calls,
+			error=error_msg
+		)
 
 
 async def trigger_signin_via_http(

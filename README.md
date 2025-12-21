@@ -12,6 +12,21 @@
 
 ## 更新日志
 
+### v2.5.0 (2025-12-22)
+
+- ✨ **新增 SQLite 数据库存储**
+  - 账号配置、Provider 配置、签到记录统一存储到 `data/checkin.db`
+  - 首次运行自动从环境变量和 `providers.json` 迁移数据
+  - 保留环境变量加载作为后备（GitHub Actions 兼容）
+- 🔒 **敏感数据脱敏**
+  - 新增 `utils/masking.py` 脱敏模块
+  - Session cookie 显示为 `abc...xyz` 格式
+  - 密码显示为 `***`
+- 🔧 **AnyRouter HTTP 优先策略**
+  - 新增 `try_direct_http_signin()` 直连签到（无需 WAF cookies）
+  - 被 WAF 拦截时自动回退到浏览器获取 cookies
+  - 减少浏览器启动次数，提升效率
+
 ### v2.4.1 (2025-12-21)
 
 - 🔧 **通知格式优化**

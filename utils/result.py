@@ -27,6 +27,13 @@ from utils.constants import (
 	SIGNIN_HISTORY_FILE,
 )
 
+# 尝试导入数据库模块（可选依赖）
+try:
+	from utils.database import get_database
+	HAS_DATABASE = True
+except ImportError:
+	HAS_DATABASE = False
+
 
 def _atomic_write(file_path: str, content: str) -> None:
 	"""原子性写入文件（write-to-temp + rename 模式）
@@ -346,3 +353,136 @@ def analyze_balance_change(
 	else:
 		# 余额减少 = 异常
 		return SigninStatus.FAILED, diff
+
+
+# ============ 数据库集成 ============
+
+
+def save_signin_to_db(
+	account_id: int,
+	result: SigninResult
+) -> bool:
+	"""保存签到结果到数据库
+
+	Args:
+	    account_id: 数据库中的账号 ID
+	    result: 签到结果
+
+	Returns:
+	    是否保存成功
+	"""
+	if not HAS_DATABASE:
+		return False
+
+	try:
+		db = get_database()
+		signin_time = result.new_record.time if result.new_record else datetime.now()
+
+		db.add_signin_record(
+			account_id=account_id,
+			signin_time=signin_time,
+			status=result.status.value,
+			balance_before=result.balance_before,
+			balance_after=result.balance_after,
+			balance_diff=result.balance_diff,
+			error_message=result.error
+		)
+		return True
+	except Exception as e:
+		print(f'[警告] 保存签到记录到数据库失败: {e}')
+		return False
+
+
+def save_all_signins_to_db(results: list[SigninResult]) -> int:
+	"""批量保存签到结果到数据库
+
+	Args:
+	    results: 签到结果列表
+
+	Returns:
+	    成功保存的记录数
+	"""
+	if not HAS_DATABASE:
+		return 0
+
+	try:
+		db = get_database()
+		saved = 0
+
+		for result in results:
+			# 解析 account_key 获取 provider 和 api_user
+			parts = result.account_key.split('_', 1)
+			if len(parts) != 2:
+				continue
+
+			provider_name, api_user = parts
+
+			# 查找账号 ID
+			account = db.get_account_by_key(provider_name, api_user)
+			if not account:
+				print(f'[警告] 数据库中未找到账号: {result.account_key}')
+				continue
+
+			signin_time = result.new_record.time if result.new_record else datetime.now()
+
+			db.add_signin_record(
+				account_id=account.id,
+				signin_time=signin_time,
+				status=result.status.value,
+				balance_before=result.balance_before,
+				balance_after=result.balance_after,
+				balance_diff=result.balance_diff,
+				error_message=result.error
+			)
+			saved += 1
+
+		return saved
+	except Exception as e:
+		print(f'[警告] 批量保存签到记录失败: {e}')
+		return 0
+
+
+def load_signin_history_from_db() -> dict[str, SigninRecord] | None:
+	"""从数据库加载签到历史
+
+	Returns:
+	    账号key到签到记录的映射，数据库不可用时返回 None
+	"""
+	if not HAS_DATABASE:
+		return None
+
+	try:
+		db = get_database()
+		accounts = db.get_all_accounts(active_only=False)
+		last_signins = db.get_all_last_signins()
+
+		history = {}
+		for account in accounts:
+			account_key = f'{account.provider_name}_{account.api_user}'
+			last_signin = last_signins.get(account.id)
+
+			if last_signin and last_signin.status == 'success':
+				history[account_key] = SigninRecord(
+					time=last_signin.signin_time,
+					balance=last_signin.balance_after
+				)
+
+		return history if history else None
+	except Exception as e:
+		print(f'[警告] 从数据库加载签到历史失败: {e}')
+		return None
+
+
+def load_signin_history_with_db() -> dict[str, SigninRecord]:
+	"""加载签到历史（优先数据库，后备 JSON 文件）
+
+	Returns:
+	    账号key到签到记录的映射
+	"""
+	# 优先从数据库加载
+	history = load_signin_history_from_db()
+	if history:
+		return history
+
+	# 后备：从 JSON 文件加载
+	return load_signin_history()

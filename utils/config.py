@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
 配置管理模块
+
+支持从数据库和环境变量加载配置。
+优先从数据库读取，环境变量作为后备和迁移数据源。
 """
 
 import json
@@ -284,3 +287,93 @@ def load_accounts_config() -> list[AccountConfig] | None:
 	except Exception as e:
 		print(f'错误: 账号配置格式不正确: {e}')
 		return None
+
+
+# ============ 数据库加载函数 ============
+
+
+def load_providers_from_db() -> Dict[str, ProviderConfig] | None:
+	"""从数据库加载 Provider 配置
+
+	Returns:
+	    Provider 名称到配置的映射，如果数据库不可用则返回 None
+	"""
+	try:
+		from utils.database import get_database
+
+		db = get_database()
+		providers = db.get_all_providers()
+
+		if not providers:
+			return None
+
+		result = {}
+		for p in providers:
+			result[p.name] = ProviderConfig(
+				name=p.name,
+				domain=p.domain,
+				login_path=p.login_path,
+				sign_in_path=p.sign_in_path,
+				user_info_path=p.user_info_path,
+				api_user_key=p.api_user_key,
+				bypass_method=p.bypass_method,
+				waf_cookie_names=p.waf_cookie_names
+			)
+
+		return result
+	except Exception as e:
+		print(f'[警告] 从数据库加载 Provider 失败: {e}')
+		return None
+
+
+def load_accounts_from_db() -> list[AccountConfig] | None:
+	"""从数据库加载账号配置
+
+	Returns:
+	    账号配置列表，如果数据库不可用则返回 None
+	"""
+	try:
+		from utils.database import get_database
+
+		db = get_database()
+		accounts = db.get_all_accounts(active_only=True)
+
+		if not accounts:
+			return None
+
+		result = []
+		for i, a in enumerate(accounts):
+			result.append(AccountConfig(
+				cookies=a.cookies,
+				api_user=a.api_user,
+				provider=a.provider_name,
+				name=a.name,
+				username=a.username,
+				password=a.password,
+				oauth_provider=a.oauth_provider
+			))
+
+		return result
+	except Exception as e:
+		print(f'[警告] 从数据库加载账号失败: {e}')
+		return None
+
+
+def load_accounts_config_with_db() -> list[AccountConfig] | None:
+	"""加载账号配置（优先数据库，后备环境变量）
+
+	Returns:
+	    账号配置列表
+	"""
+	# 优先从数据库加载
+	accounts = load_accounts_from_db()
+	if accounts:
+		print(f'[信息] 从数据库加载了 {len(accounts)} 个账号')
+		return accounts
+
+	# 后备：从环境变量加载
+	accounts = load_accounts_config()
+	if accounts:
+		print(f'[信息] 从环境变量加载了 {len(accounts)} 个账号')
+	return accounts
+

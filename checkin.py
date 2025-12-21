@@ -23,8 +23,16 @@ from tenacity import (
 	wait_exponential,
 )
 
-from utils.browser import clear_waf_cookie_cache, get_cached_waf_cookies, get_waf_cookies_and_trigger_signin, perform_real_login_signin, perform_oauth_signin_with_chrome, trigger_signin_via_http
-from utils.config import AccountConfig, AppConfig, ProviderConfig, load_accounts_config
+from utils.browser import (
+	clear_waf_cookie_cache,
+	get_cached_waf_cookies,
+	get_waf_cookies_and_trigger_signin,
+	perform_oauth_signin_with_chrome,
+	perform_real_login_signin,
+	trigger_signin_via_http,
+	try_direct_http_signin,
+)
+from utils.config import AccountConfig, AppConfig, ProviderConfig, load_accounts_config_with_db
 from utils.constants import (
 	CHROME_USER_AGENT,
 	HTTP_TIMEOUT_SECONDS,
@@ -44,7 +52,8 @@ from utils.result import (
 	get_next_signin_time,
 	is_in_cooldown,
 	load_balance_hash,
-	load_signin_history,
+	load_signin_history_with_db,
+	save_all_signins_to_db,
 	save_balance_hash,
 	save_signin_history,
 	update_signin_history,
@@ -53,6 +62,13 @@ from utils.result import (
 # 先加载环境变量，再导入 notify 模块
 load_dotenv()
 from utils.notify import notify
+
+# 尝试导入数据库模块（可选依赖）
+try:
+	from utils.database import close_database, init_database
+	HAS_DATABASE = True
+except ImportError:
+	HAS_DATABASE = False
 
 # ============ 日志管理 ============
 
@@ -379,8 +395,62 @@ async def process_single_account(
 	# 判断签到方式
 	needs_oauth_login = not provider.needs_manual_check_in() and account.has_oauth_config()
 	needs_real_login = not provider.needs_manual_check_in() and account.has_login_credentials()
+	needs_manual_checkin = provider.needs_manual_check_in()  # AnyRouter 等需要调用签到 API
+	http_signin_done = False  # 标记 HTTP 直连签到是否已完成
 
-	if needs_oauth_login:
+	# ========== AnyRouter: HTTP 优先策略 ==========
+	if needs_manual_checkin:
+		print(f'[信息] {account_name}: 使用 HTTP 优先策略（AnyRouter 模式）')
+
+		# 第一步：尝试 HTTP 直连签到（无需 WAF cookies）
+		http_result = await try_direct_http_signin(
+			account_name=account_name,
+			domain=provider.domain,
+			sign_in_path=provider.sign_in_path,
+			user_info_path=provider.user_info_path,
+			user_cookies=user_cookies,
+			api_user=account.api_user,
+			api_user_key=provider.api_user_key,
+			log_fn=print
+		)
+
+		if http_result.success:
+			# HTTP 直连成功，查询余额
+			all_cookies = user_cookies
+			http_signin_done = True  # 标记签到已完成
+		elif http_result.error == 'WAF_BLOCKED':
+			# 被 WAF 拦截，回退到浏览器获取 WAF cookies
+			print(f'[回退] {account_name}: 被 WAF 拦截，启动浏览器获取 WAF cookies...')
+			all_cookies = await prepare_cookies_with_waf(account_name, provider, user_cookies, account.api_user)
+			if not all_cookies:
+				return SigninResult(
+					account_key=account_key,
+					account_name=account_name,
+					status=SigninStatus.ERROR,
+					error='无法获取 WAF cookies'
+				)
+		elif http_result.error and http_result.error.startswith('SESSION_INVALID'):
+			# Session 无效，直接返回错误
+			return SigninResult(
+				account_key=account_key,
+				account_name=account_name,
+				status=SigninStatus.ERROR,
+				error='Session 已过期，请更新 cookies'
+			)
+		else:
+			# 其他错误，尝试浏览器方式
+			print(f'[回退] {account_name}: HTTP 签到失败（{http_result.error}），尝试浏览器方式...')
+			all_cookies = await prepare_cookies_with_waf(account_name, provider, user_cookies, account.api_user)
+			if not all_cookies:
+				return SigninResult(
+					account_key=account_key,
+					account_name=account_name,
+					status=SigninStatus.ERROR,
+					error='无法获取 WAF cookies'
+				)
+
+	# ========== AgentRouter OAuth ==========
+	elif needs_oauth_login:
 		# 使用 HTTP 请求触发签到（优先，适用于 GitHub Actions）
 		print(f'[信息] {account_name}: 使用 HTTP 请求触发签到（OAuth 账号）')
 		login_url = f'{provider.domain}{provider.login_path}'
@@ -473,7 +543,8 @@ async def process_single_account(
 
 		# 执行签到
 		api_success = True
-		if provider.needs_manual_check_in():
+		if needs_manual_checkin and not http_signin_done:
+			# HTTP 直连失败后，使用浏览器获取的 WAF cookies 重试签到
 			api_success = await execute_manual_signin(client, account_name, provider, headers)
 
 			# 签到后再次查询余额
@@ -484,6 +555,9 @@ async def process_single_account(
 					print(f'[签到后] {user_info_after.display}')
 					current_balance = user_info_after.quota
 					user_info = user_info_after
+		elif needs_manual_checkin and http_signin_done:
+			# HTTP 直连已完成签到，只需查询余额
+			print(f'[信息] {account_name}: HTTP 直连签到已完成，查询余额确认')
 		elif needs_oauth_login:
 			# OAuth 登录已经在上面完成，签到已触发
 			print(f'[信息] {account_name}: 签到已通过 HTTP/浏览器触发完成')
@@ -617,19 +691,27 @@ async def run_checkin() -> SigninSummary:
 	print('[系统] AnyRouter.top 多账号自动签到脚本已启动')
 	print(f'[时间] 执行时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
 
+	# 初始化数据库（自动迁移）
+	if HAS_DATABASE:
+		try:
+			init_database()
+		except Exception as e:
+			print(f'[警告] 数据库初始化失败: {e}')
+
 	# 加载配置
 	app_config = AppConfig.load_from_env()
 	print(f'[信息] 已加载 {len(app_config.providers)} 个 provider 配置')
 
-	accounts = load_accounts_config()
+	# 加载账号配置（优先数据库）
+	accounts = load_accounts_config_with_db()
 	if not accounts:
 		print('[失败] 无法加载账号配置，程序退出')
 		sys.exit(1)
 
 	print(f'[信息] 找到 {len(accounts)} 个账号配置')
 
-	# 加载历史记录
-	signin_history = load_signin_history()
+	# 加载历史记录（优先数据库）
+	signin_history = load_signin_history_with_db()
 	print(f'[信息] 已加载签到历史（{len(signin_history)} 条记录）')
 
 	last_balance_hash = load_balance_hash()
@@ -686,6 +768,12 @@ async def run_checkin() -> SigninSummary:
 	save_signin_history(new_history)
 	print(f'[信息] 已保存签到历史（{len(new_history)} 条记录）')
 
+	# 保存签到记录到数据库
+	if HAS_DATABASE:
+		saved_count = save_all_signins_to_db(summary.results)
+		if saved_count > 0:
+			print(f'[数据库] 已保存 {saved_count} 条签到记录到数据库')
+
 	# 保存余额 hash
 	if current_balance_hash:
 		save_balance_hash(current_balance_hash)
@@ -704,20 +792,25 @@ async def main() -> None:
 		print('新一轮签到开始')
 		print('=' * 60)
 
-	# 执行签到
-	summary = await run_checkin()
+	try:
+		# 执行签到
+		summary = await run_checkin()
 
-	# 发送通知
-	if summary.needs_notification:
-		content = build_notification_content(summary)
-		print(content)
-		notify.push_message('AnyRouter 签到提醒', content, msg_type='text')
-		print('[通知] 已发送通知')
-	else:
-		print('[信息] 所有账号成功且无余额变化，跳过通知')
+		# 发送通知
+		if summary.needs_notification:
+			content = build_notification_content(summary)
+			print(content)
+			notify.push_message('AnyRouter 签到提醒', content, msg_type='text')
+			print('[通知] 已发送通知')
+		else:
+			print('[信息] 所有账号成功且无余额变化，跳过通知')
 
-	# 设置退出码
-	sys.exit(0 if summary.failed == 0 else 1)
+		# 设置退出码
+		sys.exit(0 if summary.failed == 0 else 1)
+	finally:
+		# 关闭数据库连接
+		if HAS_DATABASE:
+			close_database()
 
 
 def run_main() -> None:
