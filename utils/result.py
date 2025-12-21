@@ -122,6 +122,7 @@ class SigninResult:
 	user_info: UserBalance | None = None  # 用户信息
 	error: str | None = None  # 错误信息
 	new_record: SigninRecord | None = None  # 需要保存的新记录
+	last_signin: datetime | None = None  # 上次签到时间
 
 	@property
 	def is_success(self) -> bool:

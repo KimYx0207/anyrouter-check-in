@@ -283,7 +283,8 @@ def create_signin_result(
 			account_name=account_name,
 			status=SigninStatus.ERROR,
 			user_info=user_info,
-			error='API 请求失败'
+			error='API 请求失败',
+			last_signin=last_signin
 		)
 
 	if current_balance is None:
@@ -292,7 +293,8 @@ def create_signin_result(
 			account_name=account_name,
 			status=SigninStatus.ERROR,
 			user_info=user_info,
-			error='无法获取余额信息'
+			error='无法获取余额信息',
+			last_signin=last_signin
 		)
 
 	# 分析余额变化
@@ -311,7 +313,8 @@ def create_signin_result(
 		balance_after=current_balance,
 		balance_diff=diff,
 		user_info=user_info,
-		new_record=new_record
+		new_record=new_record,
+		last_signin=last_signin
 	)
 
 
@@ -342,7 +345,8 @@ async def process_single_account(
 				account_key=account_key,
 				account_name=account_name,
 				status=SigninStatus.SKIPPED,
-				balance_before=last_balance
+				balance_before=last_balance,
+				last_signin=last_signin
 			)
 		print(f'[可签到] {account_name}: 冷却期已过')
 	else:
@@ -519,46 +523,83 @@ async def process_single_account(
 
 
 def build_notification_content(summary: SigninSummary) -> str:
-	"""构建通知内容"""
+	"""构建通知内容（与日志格式一致）"""
 	lines = []
 
 	# 时间信息
-	lines.append(f'[时间] 执行时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+	now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+	lines.append(f'[时间] 执行时间: {now_str}')
 	lines.append('')
 
-	# 账号详情
+	# 账号详情（格式与日志一致）
 	for result in summary.results:
-		if result.needs_notification or summary.balance_changed:
-			status_map = {
-				SigninStatus.SUCCESS: '[签到成功]',
-				SigninStatus.FIRST_RUN: '[首次运行]',
-				SigninStatus.COOLDOWN: '[冷却期内]',
-				SigninStatus.SKIPPED: '[已跳过]',
-				SigninStatus.FAILED: '[签到失败]',
-				SigninStatus.ERROR: '[发生错误]',
-			}
-			status_text = status_map.get(result.status, '[未知状态]')
+		if result.status == SigninStatus.SUCCESS:
+			# [签到成功] 账号名 | 余额: $X → $Y (+$Z) | 时间: YYYY-MM-DD HH:MM:SS
+			line = f'[签到成功] {result.account_name}'
+			if result.balance_before is not None and result.balance_after is not None:
+				line += f' | 余额: ${result.balance_before} → ${result.balance_after}'
+				if result.balance_diff is not None:
+					line += f' (+${result.balance_diff})'
+			if result.last_signin:
+				line += f' | 上次: {result.last_signin.strftime("%m-%d %H:%M")}'
+			lines.append(line)
 
-			account_line = f'{status_text} {result.account_name}'
-			if result.user_info:
-				account_line += f'\n{result.user_info.display}'
+		elif result.status == SigninStatus.FIRST_RUN:
+			# [首次运行] 账号名 | 当前余额: $X
+			line = f'[首次运行] {result.account_name}'
+			if result.balance_after is not None:
+				line += f' | 当前余额: ${result.balance_after}'
+			lines.append(line)
+
+		elif result.status == SigninStatus.SKIPPED:
+			# [已跳过] 账号名 | 上次签到: YYYY-MM-DD HH:MM:SS | 剩余冷却: XhYm
+			line = f'[已跳过] {result.account_name}'
+			if result.last_signin:
+				line += f' | 上次签到: {result.last_signin.strftime("%Y-%m-%d %H:%M:%S")}'
+				next_signin = get_next_signin_time(result.last_signin)
+				remaining = format_time_remaining(next_signin)
+				line += f' | 剩余: {remaining}'
+			if result.balance_before is not None:
+				line += f' | 余额: ${result.balance_before}'
+			lines.append(line)
+
+		elif result.status == SigninStatus.COOLDOWN:
+			# [冷却中] 账号名 | 余额未变化（今日已签到）
+			line = f'[冷却中] {result.account_name}'
+			if result.last_signin:
+				line += f' | 上次: {result.last_signin.strftime("%m-%d %H:%M")}'
+			if result.balance_after is not None:
+				line += f' | 余额: ${result.balance_after}'
+			lines.append(line)
+
+		elif result.status == SigninStatus.FAILED:
+			# [签到失败] 账号名 | 余额未变化或减少
+			line = f'[签到失败] {result.account_name}'
+			if result.balance_before is not None and result.balance_after is not None:
+				line += f' | 余额: ${result.balance_before} → ${result.balance_after}'
+				if result.balance_diff is not None and result.balance_diff != 0:
+					line += f' ({result.balance_diff:+.2f})'
+			elif result.balance_after is not None:
+				line += f' | 余额: ${result.balance_after}'
+			if result.last_signin:
+				line += f' | 上次: {result.last_signin.strftime("%m-%d %H:%M")}'
+			lines.append(line)
+
+		elif result.status == SigninStatus.ERROR:
+			# [发生错误] 账号名 | 错误: XXX
+			line = f'[发生错误] {result.account_name}'
 			if result.error:
-				account_line += f'\n错误: {result.error}'
-			lines.append(account_line)
+				line += f' | 错误: {result.error}'
+			lines.append(line)
 
 	lines.append('')
 
 	# 统计信息
-	lines.append('[统计] 签到结果统计:')
-	lines.append(f'[执行] 总计: {summary.total} 个账号')
-	lines.append(f'[签到成功] 本次签到成功: {summary.success} 个账号')
-	lines.append(f'[冷却期内] 24小时内已签到: {summary.cooldown} 个账号')
-	lines.append(f'[失败] 签到失败: {summary.failed} 个账号')
+	lines.append('[统计] 签到结果:')
+	lines.append(f'  总计: {summary.total} | 成功: {summary.success} | 冷却: {summary.cooldown} | 失败: {summary.failed}')
 
 	if summary.success > 0:
-		lines.append(f'[恭喜] 本次有 {summary.success} 个账号成功签到！')
-	if summary.cooldown > 0:
-		lines.append(f'[提示] 有 {summary.cooldown} 个账号在24小时冷却期内')
+		lines.append(f'[提示] 本次有 {summary.success} 个账号成功签到')
 	if summary.failed > 0:
 		lines.append(f'[警告] 有 {summary.failed} 个账号签到失败')
 
