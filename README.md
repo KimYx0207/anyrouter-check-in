@@ -162,6 +162,8 @@ anyrouter-check-in/
 ├── utils/                    工具模块
 │   ├── config.py             配置管理
 │   ├── constants.py          常量定义
+│   ├── database.py           SQLite 数据库操作
+│   ├── masking.py            敏感数据脱敏
 │   ├── notify.py             通知模块
 │   └── result.py             签到结果管理
 └── data/                     运行时数据（自动生成，已忽略）

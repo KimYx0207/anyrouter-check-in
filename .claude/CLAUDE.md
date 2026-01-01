@@ -85,6 +85,8 @@ feat(signin): 添加 HTTP 签到方式，支持 GitHub Actions
 | `utils/result.py` | 签到结果、历史记录管理 |
 | `utils/notify.py` | 多渠道通知推送 |
 | `utils/constants.py` | 常量定义 |
+| `utils/database.py` | SQLite 数据库操作 |
+| `utils/masking.py` | 敏感数据脱敏 |
 
 ### 签到机制
 
