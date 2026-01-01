@@ -12,6 +12,16 @@
 
 ## 更新日志
 
+### v2.7.0 (2026-01-02)
+
+- 🐛 **修复 AgentRouter 签到机制**
+  - 修正 AgentRouter 配置：移除错误的 WAF 绕过设置
+  - AgentRouter 签到通过访问 `/api/user/self` 自动触发，无需独立签到 API
+  - 仅需 session cookie，无需浏览器，本地和 GitHub Actions 均完全支持
+- 📝 **更新技术文档**
+  - 明确区分 AnyRouter（显式 API 签到）和 AgentRouter（自动签到）的机制差异
+  - 更新 CLAUDE.md 开发说明，记录正确的签到实现方式
+
 ### v2.6.0 (2025-12-31)
 
 - 📝 **GitHub Actions 运行说明**
@@ -146,12 +156,10 @@ anyrouter-check-in/
 │   ├── setup_task.bat            一键设置定时任务
 │   └── setup_task.ps1            定时任务创建逻辑
 ├── tests/                    测试文件夹
-│   ├── test_browser.py       浏览器模块测试
 │   ├── test_config.py        配置验证
 │   ├── test_notify.py        通知模块测试
 │   └── test_result.py        结果模块测试
 ├── utils/                    工具模块
-│   ├── browser.py            浏览器自动化 + HTTP 签到
 │   ├── config.py             配置管理
 │   ├── constants.py          常量定义
 │   ├── notify.py             通知模块
@@ -528,35 +536,42 @@ scripts\run_checkin.bat manual
 
 ### 签到机制说明
 
-**重要：AnyRouter 和 AgentRouter 都采用"登录即签到"机制**
+**重要：AnyRouter 和 AgentRouter 采用不同的签到机制**
 
-- **无需手动点击签到按钮**：打开网站并保持登录状态即自动完成签到
-- **签到触发条件**：访问控制台页面（`/console`）时，前端会调用 `/api/user/self` 接口，后端检测到登录状态后自动完成签到
+| 平台 | 签到方式 | 签到 API | WAF 绕过 | 浏览器依赖 |
+|------|---------|---------|---------|-----------|
+| **AnyRouter** | 显式 API 调用 | `/api/user/sign_in` | 需要（acw_tc, cdn_sec_tc, acw_sc__v2） | 本地需要，Actions 不支持 |
+| **AgentRouter** | 自动触发 | 无（通过 `/api/user/self` 触发） | 不需要 | 不需要 |
+
+**AnyRouter 签到流程：**
+1. 使用 Playwright 访问登录页获取 WAF cookies
+2. 合并 WAF cookies + session cookie
+3. 调用 `/api/user/sign_in` 接口完成签到
+
+**AgentRouter 签到流程：**
+1. 仅需 session cookie
+2. 访问 `/api/user/self`（用户信息接口）时自动触发签到
+3. 无需浏览器，本地和 GitHub Actions 均完全支持
+
+**通用说明：**
 - **签到周期**：每24小时可签到一次
 - **奖励发放**：签到成功后余额自动增加（约$0.01-$25不等）
+- **结果判断**：基于余额变化判断签到是否成功
 
 ### 脚本工作原理
 
-本脚本通过以下步骤模拟真实登录并触发签到：
+本脚本根据不同平台采用不同策略：
 
-1. **获取WAF保护cookies**
+**AnyRouter（需要 WAF 绕过）：**
+1. 使用 Playwright 访问登录页获取 WAF cookies
+2. 合并 WAF cookies 与用户 session cookie
+3. 调用 `/api/user/sign_in` 接口
+4. 对比签到前后余额验证结果
 
-   - 使用 Playwright 访问登录页面
-   - 获取防护cookies（如 `acw_tc`、`cdn_sec_tc` 等）
-2. **设置登录状态**
-
-   - 将用户的 session cookie 注入浏览器
-   - 访问首页建立登录会话
-3. **触发签到逻辑**
-
-   - 访问 `/console/token`（模拟OAuth回调）
-   - 访问 `/console`（控制台首页）
-   - 前端JavaScript自动调用 `/api/user/self`
-   - 后端检测到登录行为，自动完成签到
-4. **验证签到结果**
-
-   - 查询签到前后的账户余额
-   - 对比余额变化确认签到是否成功
+**AgentRouter（自动签到）：**
+1. 直接使用 session cookie 发起 HTTP 请求
+2. 访问 `/api/user/self` 接口（自动触发签到）
+3. 对比签到前后余额验证结果
 
 ### WAF 绕过机制
 

@@ -14,7 +14,6 @@
     "sign_in_path": null,
     "user_info_path": "/api/user/self",
     "api_user_key": "new-api-user",
-    "signin_method": "http_login",
-    "waf_cookie_names": ["acw_tc"]
+    "signin_method": "http_login"
   }
 }

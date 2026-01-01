@@ -80,8 +80,7 @@ feat(signin): 添加 HTTP 签到方式，支持 GitHub Actions
 
 | 文件 | 职责 |
 |------|------|
-| `checkin.py` | 主程序入口，签到流程控制 |
-| `utils/browser.py` | 浏览器自动化、WAF 绕过、HTTP 签到 |
+| `checkin.py` | 主程序入口，签到流程控制，WAF 绕过 |
 | `utils/config.py` | 配置管理（账号、Provider） |
 | `utils/result.py` | 签到结果、历史记录管理 |
 | `utils/notify.py` | 多渠道通知推送 |
@@ -89,18 +88,22 @@ feat(signin): 添加 HTTP 签到方式，支持 GitHub Actions
 
 ### 签到机制
 
-1. **AnyRouter**: 需要调用 `/api/user/sign_in` 接口
-2. **AgentRouter**: 访问 `/login` 页面时自动触发（OAuth 登录）
+| 平台 | 签到方式 | 签到 API | WAF 绕过 |
+|------|---------|---------|---------|
+| **AnyRouter** | 显式 API 调用 | `/api/user/sign_in` | 需要（acw_tc, cdn_sec_tc, acw_sc__v2） |
+| **AgentRouter** | 自动触发 | 无（通过 `/api/user/self` 触发） | 不需要 |
 
-### 签到策略优先级
+### 签到策略
 
 ```
-OAuth 账号:
-1. HTTP 请求（优先，无浏览器依赖）
-2. Playwright 浏览器（回退，仅本地）
+AnyRouter:
+1. Playwright 获取 WAF cookies
+2. 合并 WAF cookies + session cookie
+3. 调用 /api/user/sign_in 接口
 
-普通账号:
-1. WAF Cookie 获取 + API 调用
+AgentRouter:
+1. 仅需 session cookie
+2. 访问 /api/user/self 自动触发签到
 ```
 
 ---
