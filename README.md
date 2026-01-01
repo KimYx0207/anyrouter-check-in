@@ -540,7 +540,7 @@ scripts\run_checkin.bat manual
 
 | 平台 | 签到方式 | 签到 API | WAF 绕过 | 浏览器依赖 |
 |------|---------|---------|---------|-----------|
-| **AnyRouter** | 显式 API 调用 | `/api/user/sign_in` | 需要（acw_tc, cdn_sec_tc, acw_sc__v2） | 本地需要，Actions 不支持 |
+| **AnyRouter** | 显式 API 调用 | `/api/user/sign_in` | 需要（acw_tc, cdn_sec_tc, acw_sc__v2） | 需要（Playwright） |
 | **AgentRouter** | 自动触发 | 无（通过 `/api/user/self` 触发） | 不需要 | 不需要 |
 
 **AnyRouter 签到流程：**
