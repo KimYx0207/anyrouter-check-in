@@ -138,22 +138,9 @@ def get_user_info(client, headers, user_info_url: str):
 
 
 async def prepare_cookies(account_name: str, provider_config, user_cookies: dict) -> dict | None:
-	"""准备请求所需的 cookies（可能包含 WAF cookies）"""
-	waf_cookies = {}
-
-	if provider_config.needs_waf_cookies():
-		login_url = f'{provider_config.domain}{provider_config.login_path}'
-		waf_cookies = await get_waf_cookies_with_playwright(account_name, login_url, provider_config.waf_cookie_names)
-		if not waf_cookies:
-			print(f'[失败] {account_name}: 无法获取 WAF cookies')
-			return None
-	else:
-		print(
-			f'[信息] {account_name}: 服务商 {provider_config.name} 无需绕过 WAF，'
-			f'直接使用用户 cookies'
-		)
-
-	return {**waf_cookies, **user_cookies}
+	"""准备请求所需的 cookies（纯HTTP模式，跳过WAF）"""
+	print(f'[信息] {account_name}: 使用纯 HTTP 模式，直接使用用户 cookies')
+	return user_cookies
 
 
 def execute_check_in(client, account_name: str, provider_config, headers: dict):
@@ -405,13 +392,13 @@ async def main():
 				error=str(e)[:100],
 			))
 
-	# 统计结果
-	success_count = sum(1 for r in results if r.is_success)
+	# 统计结果 - 四类状态互斥
+	success_count = sum(1 for r in results if r.is_success)  # SUCCESS + FIRST_RUN
 	failed_count = sum(1 for r in results if r.status in (SigninStatus.FAILED, SigninStatus.ERROR))
-	skipped_count = sum(1 for r in results if r.status == SigninStatus.SKIPPED)
+	cooldown_count = sum(1 for r in results if r.status in (SigninStatus.SKIPPED, SigninStatus.COOLDOWN))
 	total_count = len(results)
 
-	print(f'\n[统计] 签到完成: 成功 {success_count}, 失败 {failed_count}, 跳过 {skipped_count}, 总计 {total_count}')
+	print(f'\n[统计] 签到完成: 成功 {success_count}, 失败 {failed_count}, 冷却 {cooldown_count}, 总计 {total_count}')
 
 	# 更新签到历史
 	new_history = update_signin_history(signin_history, results)
@@ -518,8 +505,7 @@ async def main():
 
 			notification_lines.append(line)
 
-		# 统计摘要
-		cooldown_count = sum(1 for r in results if r.status in (SigninStatus.SKIPPED, SigninStatus.COOLDOWN))
+		# 统计摘要（使用统一的计数变量）
 		summary = [
 			'',
 			(

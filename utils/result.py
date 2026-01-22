@@ -141,8 +141,8 @@ class SigninResult:
 
 	@property
 	def is_success(self) -> bool:
-		"""是否成功（包括首次运行）"""
-		return self.status in (SigninStatus.SUCCESS, SigninStatus.FIRST_RUN, SigninStatus.COOLDOWN, SigninStatus.SKIPPED)
+		"""是否成功（包括首次运行，不包括 COOLDOWN）"""
+		return self.status in (SigninStatus.SUCCESS, SigninStatus.FIRST_RUN)
 
 	@property
 	def needs_notification(self) -> bool:
