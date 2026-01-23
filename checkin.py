@@ -51,25 +51,31 @@ def parse_cookies(cookies_data):
 
 
 async def get_waf_cookies_with_playwright(account_name: str, login_url: str, required_cookies: list[str]):
-	"""使用 Playwright 获取 WAF cookies（使用可见浏览器窗口绕过Cloudflare检测）"""
+	"""使用 Playwright 获取 WAF cookies（使用新 headless 模式绕过检测）"""
 	print(f'[处理中] {account_name}: 启动浏览器获取 WAF cookies...')
 
 	async with async_playwright() as p:
 		import tempfile
 
 		with tempfile.TemporaryDirectory() as temp_dir:
-			# 使用Chromium，非无头模式（Cloudflare检测）
+			# 使用 Chrome 新 headless 模式（更难被 WAF 检测）
 			context = await p.chromium.launch_persistent_context(
 				user_data_dir=temp_dir,
-				headless=False,  # 必须是False，Cloudflare会检测无头浏览器
+				headless=True,  # 使用新 headless 模式，不弹出窗口
 				user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
 				viewport={'width': 1920, 'height': 1080},
 				args=[
 					'--disable-blink-features=AutomationControlled',
 					'--disable-dev-shm-usage',
-					'--disable-web-security',
 					'--no-sandbox',
+					'--disable-infobars',
+					'--disable-background-timer-throttling',
+					'--disable-popup-blocking',
+					'--disable-backgrounding-occluded-windows',
+					'--disable-renderer-backgrounding',
+					'--window-size=1920,1080',
 				],
+				ignore_default_args=['--enable-automation'],
 			)
 
 			page = await context.new_page()
@@ -138,9 +144,22 @@ def get_user_info(client, headers, user_info_url: str):
 
 
 async def prepare_cookies(account_name: str, provider_config, user_cookies: dict) -> dict | None:
-	"""准备请求所需的 cookies（纯HTTP模式，跳过WAF）"""
-	print(f'[信息] {account_name}: 使用纯 HTTP 模式，直接使用用户 cookies')
-	return user_cookies
+	"""准备请求所需的 cookies（可能包含 WAF cookies）"""
+	waf_cookies = {}
+
+	if provider_config.needs_waf_cookies():
+		login_url = f'{provider_config.domain}{provider_config.login_path}'
+		waf_cookies = await get_waf_cookies_with_playwright(account_name, login_url, provider_config.waf_cookie_names)
+		if not waf_cookies:
+			print(f'[失败] {account_name}: 无法获取 WAF cookies')
+			return None
+	else:
+		print(
+			f'[信息] {account_name}: 服务商 {provider_config.name} 无需绕过 WAF，'
+			f'直接使用用户 cookies'
+		)
+
+	return {**waf_cookies, **user_cookies}
 
 
 def execute_check_in(client, account_name: str, provider_config, headers: dict):

@@ -12,6 +12,18 @@
 
 ## 更新日志
 
+### v2.9.2 (2026-01-23)
+
+- 🚀 **优化 WAF 绕过机制**
+  - 升级到 Chrome 新 headless 模式，更难被 WAF 检测
+  - 签到不再弹出浏览器窗口，完全后台运行
+  - 优化浏览器启动参数，提升绕过成功率
+- 🔧 **恢复 WAF cookies 获取**
+  - 移除纯 HTTP 模式，重新使用 WAF cookies 确保签到成功
+  - 优化 cookies 准备流程，提升稳定性
+- 🧹 **清理不安全参数**
+  - 移除 `--disable-web-security` 等不安全浏览器参数
+
 ### v2.9.1 (2026-01-19)
 
 - 🐛 **修复数据库遗留数据问题**
@@ -276,7 +288,7 @@ scripts\setup_task.bat
 
 **注意事项**：
 
-- 首次运行会弹出 Chrome 浏览器窗口（用于获取 WAF cookies），这是正常现象
+- 签到在后台自动运行，不会弹出浏览器窗口
 - 签到失败或余额变化时会自动发送通知（如已配置通知渠道）
 - `.env` 文件包含敏感信息，不要分享或上传到公共平台
 
@@ -499,14 +511,14 @@ CUSTOM_SMTP_SERVER=smtp.gmail.com:587
 - 本地 `.env` 文件现已支持多行格式
 - 使用在线工具验证 JSON 格式：https://jsonlint.com/
 
-### 5. 浏览器窗口一直不关闭
+### 5. 签到失败，提示 WAF 检测
 
-**原因**：网络延迟或 WAF 检测
+**原因**：WAF 防护策略升级
 
 **解决方案**：
 
-- 等待 30 秒，通常会自动完成
-- 如果超时，手动关闭浏览器即可
+- 脚本已自动升级到新 headless 模式，更难被检测
+- 如仍然失败，等待 30 分钟后重试
 - 检查网络连接是否正常
 
 ### 6. 定时任务未运行
@@ -557,7 +569,7 @@ scripts\run_checkin.bat manual
 
 **预期结果：**
 
-- 浏览器窗口自动打开（获取 WAF cookies）
+- 签到在后台自动运行（不会弹出浏览器窗口）
 - 显示各账号签到状态和余额信息
 - 输出 `[成功] 所有账号签到成功！`
 
@@ -568,7 +580,7 @@ scripts\run_checkin.bat manual
 ### 签到机制说明
 
 **AnyRouter 签到流程：**
-1. 使用 Playwright 访问登录页获取 WAF cookies（acw_tc, cdn_sec_tc, acw_sc__v2）
+1. 使用 Playwright 新 headless 模式访问登录页获取 WAF cookies（acw_tc, cdn_sec_tc, acw_sc__v2）
 2. 合并 WAF cookies + session cookie
 3. 调用 `/api/user/sign_in` 接口完成签到
 4. 对比签到前后余额验证结果
@@ -582,7 +594,7 @@ scripts\run_checkin.bat manual
 ### 脚本工作原理
 
 **AnyRouter 签到策略：**
-1. 使用 Playwright 访问登录页获取 WAF cookies
+1. 使用 Playwright 新 headless 模式访问登录页获取 WAF cookies（不弹出窗口）
 2. 合并 WAF cookies 与用户 session cookie
 3. 调用 `/api/user/sign_in` 接口
 4. 对比签到前后余额验证结果
@@ -592,7 +604,9 @@ scripts\run_checkin.bat manual
 
 ### WAF 绕过机制
 
-- 使用 Playwright 自动化浏览器
+- 使用 Playwright 新 headless 模式（Chrome 138+）
+- 优化浏览器参数，更难被 WAF 检测
+- 完全后台运行，不弹出窗口
 - 访问登录页面获取 WAF cookies（如 acw_tc）
 - 将 WAF cookies 与用户 cookies 合并后发起请求
 
@@ -608,7 +622,7 @@ scripts\run_checkin.bat manual
 
 1. **Cookies 有效期**：约 1 个月，过期后需重新获取
 2. **定时间隔**：AnyRouter 签到周期为 24 小时，每 6 小时运行可确保不漏签
-3. **浏览器窗口**：签到时会短暂弹出 Chrome 窗口（用于绕过 WAF），属于正常现象
+3. **后台运行**：签到使用新 headless 模式，不会弹出浏览器窗口
 4. **GitHub Actions 延迟**：可能延迟 1-2 小时，但不影响签到有效性
 5. **安全性**：不要在公共场合分享 `.env` 文件或 session 值
 
