@@ -9,7 +9,7 @@ import json
 import os
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List
 
@@ -467,30 +467,13 @@ class Database:
 		Returns:
 		    当前周期累计收益（美元）
 		"""
-		conn = self.connect()
-		# 获取最后一次成功签到的时间作为基准
-		cursor = conn.execute('''
-			SELECT signin_time
-			FROM signin_records
-			WHERE account_id = ? AND balance_diff > 0
-			ORDER BY signin_time DESC
-			LIMIT 1
-		''', (account_id,))
-		row = cursor.fetchone()
-		if not row:
+		window = self._get_current_gain_window(account_id)
+		if not window:
 			return 0.0
-
-		base_time = row['signin_time']
-		# 如果是字符串，转换为datetime
-		if isinstance(base_time, str):
-			from datetime import datetime
-			base_time = datetime.fromisoformat(base_time)
-
-		# 计算24小时后的结束时间
-		from datetime import timedelta
-		end_time = base_time + timedelta(hours=24)
+		base_time, end_time = window
 
 		# 累计该时间范围内所有成功签到的收益
+		conn = self.connect()
 		cursor = conn.execute('''
 			SELECT COALESCE(SUM(balance_diff), 0) as total_gain
 			FROM signin_records
@@ -514,30 +497,13 @@ class Database:
 		Returns:
 		    首次签到时间的datetime对象，如果没有则返回None
 		"""
-		conn = self.connect()
-		# 获取最后一次成功签到的时间作为基准
-		cursor = conn.execute('''
-			SELECT signin_time
-			FROM signin_records
-			WHERE account_id = ? AND balance_diff > 0
-			ORDER BY signin_time DESC
-			LIMIT 1
-		''', (account_id,))
-		row = cursor.fetchone()
-		if not row:
+		window = self._get_current_gain_window(account_id)
+		if not window:
 			return None
-
-		base_time = row['signin_time']
-		# 如果是字符串，转换为datetime
-		if isinstance(base_time, str):
-			from datetime import datetime
-			base_time = datetime.fromisoformat(base_time)
-
-		# 计算24小时后的结束时间
-		from datetime import timedelta
-		end_time = base_time + timedelta(hours=24)
+		base_time, end_time = window
 
 		# 获取该时间范围内最早的一次成功签到
+		conn = self.connect()
 		cursor = conn.execute('''
 			SELECT signin_time
 			FROM signin_records
@@ -554,10 +520,34 @@ class Database:
 
 		first_signin_time = row['signin_time']
 		if isinstance(first_signin_time, str):
-			from datetime import datetime
 			first_signin_time = datetime.fromisoformat(first_signin_time)
 
 		return first_signin_time
+
+	def _get_current_gain_window(self, account_id: int) -> tuple[datetime, datetime] | None:
+		"""返回当前仍有效的正收益签到周期窗口。"""
+		conn = self.connect()
+		cursor = conn.execute('''
+			SELECT signin_time
+			FROM signin_records
+			WHERE account_id = ? AND balance_diff > 0
+			ORDER BY signin_time DESC
+			LIMIT 1
+		''', (account_id,))
+		row = cursor.fetchone()
+		if not row:
+			return None
+
+		base_time = row['signin_time']
+		if isinstance(base_time, str):
+			base_time = datetime.fromisoformat(base_time)
+
+		end_time = base_time + timedelta(hours=24)
+		now = datetime.now()
+		if not base_time <= now < end_time:
+			return None
+
+		return base_time, end_time
 
 	def _row_to_signin_record(self, row: sqlite3.Row) -> SigninRecordRow:
 		"""将数据库行转换为 SigninRecordRow"""

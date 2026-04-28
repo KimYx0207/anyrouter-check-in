@@ -472,14 +472,13 @@ async def main():
 				from utils.result import get_current_cycle_first_signin_time
 				today_gain_value = get_today_total_gain(result.account_key)
 				first_signin_time = get_current_cycle_first_signin_time(result.account_key)
-				today_gain = f'{today_gain_value}'
-
-				# 构建通知文本
-				gain_text = f'(+${today_gain}'
+				gain_parts = []
+				if today_gain_value > 0:
+					gain_parts.append(f'+${today_gain_value}')
 				if first_signin_time:
 					time_str = first_signin_time.strftime('%Y/%m/%d %H:%M')
-					gain_text += f'，签到成功时间 {time_str}'
-				gain_text += ')'
+					gain_parts.append(f'签到成功时间 {time_str}')
+				gain_text = f'({"，".join(gain_parts)})' if gain_parts else ''
 
 				line = (
 					f'[冷却中] {result.account_name} | 上次签到: {last_signin_time} | '
