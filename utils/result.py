@@ -543,6 +543,107 @@ def get_current_cycle_first_signin_time(account_key: str):
 		return None
 
 
+def get_last_success_info(account_key: str) -> tuple[datetime | None, float | None]:
+	"""获取指定账号最后一次成功签到的时间和余额变化
+
+	Args:
+	    account_key: 账号唯一标识（provider_apiuser）
+
+	Returns:
+	    (最后成功签到时间, 余额变化值)，无记录时返回 (None, None)
+	"""
+	if not HAS_DATABASE:
+		return None, None
+
+	try:
+		db = get_database()
+		parts = account_key.split('_', 1)
+		if len(parts) != 2:
+			return None, None
+
+		provider_name, api_user = parts
+		account = db.get_account_by_key(provider_name, api_user)
+		if not account:
+			return None, None
+
+		record = db.get_last_success(account.id)
+		if record:
+			return record.signin_time, record.balance_diff
+		return None, None
+	except Exception as e:
+		print(f'[警告] 获取最后成功签到信息失败: {e}')
+		return None, None
+
+
+def _get_effective_signin_time(result: SigninResult) -> datetime | None:
+	"""获取通知中应展示的签到时间。"""
+	if result.new_record:
+		return result.new_record.time
+	return result.last_signin
+
+
+def _format_balance_for_notification(result: SigninResult) -> str:
+	"""格式化通知中的余额。"""
+	if result.user_info:
+		return f'{result.user_info.quota}'
+	balance_value = result.balance_after if result.balance_after is not None else result.balance_before
+	return f'{balance_value}' if balance_value is not None else '未知'
+
+
+def _format_gain_text(account_key: str, include_time: bool = True) -> str:
+	"""格式化当前有效周期内的收益信息。"""
+	today_gain_value = get_today_total_gain(account_key)
+	first_signin_time = get_current_cycle_first_signin_time(account_key)
+	gain_parts = []
+
+	if today_gain_value > 0:
+		gain_parts.append(f'+${today_gain_value}')
+	if include_time and first_signin_time:
+		time_str = first_signin_time.strftime('%Y/%m/%d %H:%M')
+		gain_parts.append(f'签到成功时间 {time_str}')
+
+	return f'({"，".join(gain_parts)})' if gain_parts else ''
+
+
+def format_notification_line(result: SigninResult) -> str:
+	"""格式化单个账号的通知行。"""
+	if result.status in (SigninStatus.SKIPPED, SigninStatus.COOLDOWN):
+		event_time = _get_effective_signin_time(result)
+		last_signin_time = event_time.strftime('%Y-%m-%d %H:%M:%S') if event_time else '未知'
+		remaining = format_time_remaining(get_next_signin_time(event_time))
+		balance = _format_balance_for_notification(result)
+		gain_text = _format_gain_text(result.account_key)
+		return (
+			f'[冷却中] {result.account_name} | 上次签到: {last_signin_time} | '
+			f'剩余: {remaining} | 余额: ${balance}{gain_text}'
+		)
+
+	status_icon = {
+		SigninStatus.SUCCESS: '[成功]',
+		SigninStatus.FIRST_RUN: '[首次]',
+		SigninStatus.FAILED: '[失败]',
+		SigninStatus.ERROR: '[错误]',
+	}.get(result.status, '[未知]')
+
+	line = f'{status_icon} {result.account_name}'
+
+	if result.status in (SigninStatus.SUCCESS, SigninStatus.FIRST_RUN):
+		event_time = _get_effective_signin_time(result)
+		event_time_text = event_time.strftime('%Y-%m-%d %H:%M:%S') if event_time else '未知'
+		time_label = '签到成功' if result.status == SigninStatus.SUCCESS else '首次记录'
+		balance = _format_balance_for_notification(result)
+		gain_text = _format_gain_text(result.account_key, include_time=False)
+		line = f'{line} | {time_label}: {event_time_text} | 余额: ${balance}{gain_text}'
+	elif result.user_info or result.balance_after is not None or result.balance_before is not None:
+		balance = _format_balance_for_notification(result)
+		line += f'\n   余额: ${balance}'
+
+	if result.error:
+		line += f'\n   错误: {result.error[:50]}'
+
+	return line
+
+
 def load_signin_history_with_db() -> dict[str, SigninRecord]:
 	"""加载签到历史（优先数据库，后备 JSON 文件）
 

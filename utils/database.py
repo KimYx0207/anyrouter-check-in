@@ -441,6 +441,25 @@ class Database:
 		row = cursor.fetchone()
 		return self._row_to_signin_record(row) if row else None
 
+	def get_last_success(self, account_id: int) -> SigninRecordRow | None:
+		"""获取账号最后一次成功签到的记录
+
+		Args:
+		    account_id: 账号ID
+
+		Returns:
+		    最后一次成功的签到记录，没有则返回 None
+		"""
+		conn = self.connect()
+		cursor = conn.execute('''
+			SELECT * FROM signin_records
+			WHERE account_id = ? AND status = 'success'
+			ORDER BY signin_time DESC
+			LIMIT 1
+		''', (account_id,))
+		row = cursor.fetchone()
+		return self._row_to_signin_record(row) if row else None
+
 	def get_all_last_signins(self) -> dict[int, SigninRecordRow]:
 		"""获取所有账号的最后一次签到记录"""
 		conn = self.connect()

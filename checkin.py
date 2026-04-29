@@ -22,6 +22,7 @@ from utils.result import (
 	SigninResult,
 	SigninStatus,
 	analyze_balance_change,
+	format_notification_line,
 	generate_balance_hash,
 	is_in_cooldown,
 	load_balance_hash,
@@ -458,70 +459,7 @@ async def main():
 		notification_lines = []
 
 		for result in results:
-			if result.status == SigninStatus.SKIPPED:
-				from utils.result import format_time_remaining, get_next_signin_time, get_today_total_gain
-
-				last_signin_time = (
-					result.last_signin.strftime('%Y-%m-%d %H:%M:%S')
-					if result.last_signin else '未知'
-				)
-				remaining = format_time_remaining(get_next_signin_time(result.last_signin))
-				balance_value = result.balance_after if result.balance_after is not None else result.balance_before
-				balance = f'{balance_value}' if balance_value is not None else '未知'
-				# 获取今日累计收益和首次签到时间
-				from utils.result import get_current_cycle_first_signin_time
-				today_gain_value = get_today_total_gain(result.account_key)
-				first_signin_time = get_current_cycle_first_signin_time(result.account_key)
-				gain_parts = []
-				if today_gain_value > 0:
-					gain_parts.append(f'+${today_gain_value}')
-				if first_signin_time:
-					time_str = first_signin_time.strftime('%Y/%m/%d %H:%M')
-					gain_parts.append(f'签到成功时间 {time_str}')
-				gain_text = f'({"，".join(gain_parts)})' if gain_parts else ''
-
-				line = (
-					f'[冷却中] {result.account_name} | 上次签到: {last_signin_time} | '
-					f'剩余: {remaining} | 余额: ${balance}{gain_text}'
-				)
-				notification_lines.append(line)
-				continue
-
-			status_icon = {
-				SigninStatus.SUCCESS: '[成功]',
-				SigninStatus.FIRST_RUN: '[首次]',
-				SigninStatus.COOLDOWN: '[冷却]',
-				SigninStatus.FAILED: '[失败]',
-				SigninStatus.ERROR: '[错误]',
-			}.get(result.status, '[未知]')
-
-			line = f'{status_icon} {result.account_name}'
-
-			if result.user_info:
-				line += f'\n   余额: ${result.user_info.quota}'
-				# 获取今日累计收益和首次签到时间
-				from utils.result import get_current_cycle_first_signin_time, get_today_total_gain
-
-				today_gain_value = get_today_total_gain(result.account_key)
-				first_signin_time = get_current_cycle_first_signin_time(result.account_key)
-
-				if today_gain_value > 0:
-					gain_text = f' (+${today_gain_value}'
-					# 如果有首次签到时间，添加到括号中
-					if first_signin_time:
-						time_str = first_signin_time.strftime('%Y/%m/%d %H:%M')
-						gain_text += f'，签到成功时间 {time_str}'
-					gain_text += ')'
-					line += gain_text
-				elif result.balance_diff is not None and result.balance_diff != 0:
-					# 如果没有今日累计记录，显示单次变化
-					sign = '+' if result.balance_diff > 0 else ''
-					line += f' ({sign}${result.balance_diff})'
-
-			if result.error:
-				line += f'\n   错误: {result.error[:50]}'
-
-			notification_lines.append(line)
+			notification_lines.append(format_notification_line(result))
 
 		# 统计摘要（使用统一的计数变量）
 		summary = [
