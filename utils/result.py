@@ -470,9 +470,16 @@ def load_signin_history_from_db() -> dict[str, SigninRecord] | None:
 
 			# 注意：数据库层已过滤掉 skipped/error/failed，这里再做一次防御性过滤
 			if last_signin and last_signin.status in ('success', 'cooldown', 'first_run'):
+				balance = (
+					last_signin.balance_after
+					if last_signin.balance_after is not None
+					else last_signin.balance_before
+				)
+				if balance is None:
+					balance = db.get_last_known_balance(account.id)
 				history[account_key] = SigninRecord(
 					time=last_signin.signin_time,
-					balance=last_signin.balance_after
+					balance=balance
 				)
 
 		return history if history else None

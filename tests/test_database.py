@@ -63,3 +63,27 @@ def test_current_gain_window_uses_recent_positive_record(tmp_path):
 		assert db.get_current_cycle_first_signin_time(account_id) == recent_time
 	finally:
 		db.close()
+
+
+def test_get_last_known_balance_uses_latest_non_null_balance(tmp_path):
+	db = Database(str(tmp_path / 'checkin.db'))
+	account_id = _create_test_account(db)
+	try:
+		db.add_signin_record(
+			account_id=account_id,
+			signin_time=datetime(2026, 4, 24, 19, 6),
+			status='success',
+			balance_before=123.45,
+			balance_after=None,
+		)
+		db.add_signin_record(
+			account_id=account_id,
+			signin_time=datetime(2026, 4, 29, 12, 0),
+			status='success',
+			balance_before=None,
+			balance_after=None,
+		)
+
+		assert db.get_last_known_balance(account_id) == 123.45
+	finally:
+		db.close()

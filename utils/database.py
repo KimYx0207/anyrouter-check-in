@@ -460,6 +460,20 @@ class Database:
 		row = cursor.fetchone()
 		return self._row_to_signin_record(row) if row else None
 
+	def get_last_known_balance(self, account_id: int) -> float | None:
+		"""获取账号最后一次非空余额。"""
+		conn = self.connect()
+		cursor = conn.execute('''
+			SELECT COALESCE(balance_after, balance_before) AS balance
+			FROM signin_records
+			WHERE account_id = ?
+			  AND COALESCE(balance_after, balance_before) IS NOT NULL
+			ORDER BY signin_time DESC, id DESC
+			LIMIT 1
+		''', (account_id,))
+		row = cursor.fetchone()
+		return row['balance'] if row else None
+
 	def get_all_last_signins(self) -> dict[int, SigninRecordRow]:
 		"""获取所有账号的最后一次签到记录"""
 		conn = self.connect()
