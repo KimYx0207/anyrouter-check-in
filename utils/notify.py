@@ -74,9 +74,27 @@ class NotificationKit:
 		self._config_loaded = True
 
 	def _check_response(self, response: httpx.Response, service_name: str) -> None:
-		"""检查 HTTP 响应状态"""
+		"""检查 HTTP 状态和上游新增的通知服务业务错误。"""
 		if response.status_code >= 400:
 			raise NotificationError(f'{service_name} 返回错误状态码: {response.status_code}')
+		try:
+			payload = response.json()
+		except ValueError:
+			return
+		if not isinstance(payload, dict):
+			return
+
+		error_msg = payload.get('errmsg') or payload.get('message') or payload.get('msg') or payload.get('error')
+		if payload.get('ok') is False:
+			raise NotificationError(f'{service_name} 发送失败: {error_msg or payload.get("description") or "ok=false"}')
+		for field, accepted in (
+			('errcode', (None, 0)),
+			('StatusCode', (None, 0)),
+			('code', (None, 0, 200)),
+			('ret', (None, 0, 1, 200)),
+		):
+			if payload.get(field) not in accepted:
+				raise NotificationError(f'{service_name} 发送失败: {error_msg or payload[field]}')
 
 	def send_email(self, title: str, content: str, msg_type: Literal['text', 'html'] = 'text') -> None:
 		"""发送邮件通知"""

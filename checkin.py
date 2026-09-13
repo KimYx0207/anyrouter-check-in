@@ -9,16 +9,32 @@
 import asyncio
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+from cloakbrowser import launch_async
 from dotenv import load_dotenv
-from playwright.async_api import async_playwright
 
+from utils.browser import (
+	BrowserLoginResult,
+	has_session_cookie,
+	is_logged_in,
+	launch_login_context,
+	load_browser_login_settings,
+	login_with_email_form,
+	navigate_login_page,
+	prepare_browser_page,
+	save_login_screenshot,
+	verify_browser_login,
+	wait_for_waf_ready,
+)
 from utils.config import AccountConfig, AppConfig, load_accounts_config
+from utils.debug import debug_print, is_debug_enabled
 from utils.notify import notify
+from utils.proxy import get_playwright_proxy, get_proxy_server
 from utils.result import (
 	SigninRecord,
 	SigninResult,
@@ -35,7 +51,7 @@ from utils.result import (
 	update_signin_history,
 )
 
-load_dotenv()
+load_dotenv(Path(__file__).with_name('.env'))
 
 
 @dataclass(frozen=True)
@@ -64,69 +80,153 @@ def parse_cookies(cookies_data):
 	return {}
 
 
-async def get_waf_cookies_with_playwright(account_name: str, login_url: str, required_cookies: list[str]):
-	"""使用 Playwright 获取 WAF cookies（隐私模式）"""
-	print(f'[处理中] {account_name}: 启动浏览器获取 WAF cookies...')
+async def get_waf_cookies_with_browser(
+	account_name: str,
+	login_url: str,
+	required_cookies: list[str],
+	*,
+	use_proxy: bool = False,
+):
+	"""使用浏览器获取 WAF cookies"""
+	print(f'[PROCESSING] {account_name}: Starting browser to get WAF cookies...')
 
-	async with async_playwright() as p:
-		import tempfile
+	launch_kwargs: dict = {'headless': True}
+	proxy = get_playwright_proxy(use_proxy=use_proxy)
+	if proxy:
+		launch_kwargs['proxy'] = proxy
+	browser = await launch_async(**launch_kwargs)
 
-		with tempfile.TemporaryDirectory() as temp_dir:
-			context = await p.chromium.launch_persistent_context(
-				user_data_dir=temp_dir,
-				headless=False,
-				user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
-				viewport={'width': 1920, 'height': 1080},
-				args=[
-					'--disable-blink-features=AutomationControlled',
-					'--disable-dev-shm-usage',
-					'--disable-web-security',
-					'--disable-features=VizDisplayCompositor',
-					'--no-sandbox',
-				],
+	try:
+		page = await browser.new_page()
+		await prepare_browser_page(page)
+		print(f'[PROCESSING] {account_name}: Access login page to get initial cookies...')
+
+		await page.goto(login_url, wait_until='domcontentloaded')
+		await wait_for_waf_ready(page)
+
+		cookies = await page.context.cookies()
+
+		waf_cookies = {}
+		for cookie in cookies:
+			cookie_name = cookie.get('name')
+			cookie_value = cookie.get('value')
+			if cookie_name in required_cookies and cookie_value is not None:
+				waf_cookies[cookie_name] = cookie_value
+
+		print(f'[INFO] {account_name}: Got {len(waf_cookies)} WAF cookies')
+
+		missing_cookies = [c for c in required_cookies if c not in waf_cookies]
+
+		if missing_cookies:
+			print(f'[FAILED] {account_name}: Missing WAF cookies: {missing_cookies}')
+			await browser.close()
+			return None
+
+		print(f'[SUCCESS] {account_name}: Successfully got all WAF cookies')
+		await browser.close()
+		return waf_cookies
+
+	except Exception as e:
+		print(f'[FAILED] {account_name}: Error occurred while getting WAF cookies: {e}')
+		await browser.close()
+		return None
+
+
+async def login_with_credentials(
+	account_name: str,
+	provider_config,
+	provider_name: str,
+	email: str,
+	password: str,
+) -> BrowserLoginResult | None:
+	"""使用邮箱密码通过浏览器登录，返回 cookies 与拦截到的 api user id。"""
+	print(f'[PROCESSING] {account_name}: Logging in with email/password...')
+
+	login_url = f'{provider_config.domain}{provider_config.login_path}'
+	settings = load_browser_login_settings(
+		account_name,
+		provider_name,
+		persist_profile=provider_config.persist_profile,
+	)
+	timeout_ms = settings.wait_timeout_ms
+
+	debug_print(
+		f'[INFO] {account_name}: Browser profile={settings.profile_dir}, '
+		f'persist={settings.persist_profile}, headless={settings.headless}, '
+		f'humanize={settings.humanize}, timeout={timeout_ms}ms'
+	)
+
+	print(
+		f'[INFO] {account_name}: Provider proxy={"enabled" if provider_config.use_proxy else "disabled"} '
+		f'({provider_name})'
+	)
+
+	try:
+		context = await launch_login_context(settings, use_proxy=provider_config.use_proxy)
+	except Exception as e:
+		print(f'[FAILED] {account_name}: Browser launch failed: {e}')
+		return None
+
+	page = None
+	try:
+		page = await context.new_page()
+		await prepare_browser_page(page)
+		await navigate_login_page(
+			page,
+			login_url,
+			timeout_ms,
+			provider=provider_name,
+			account_name=account_name,
+		)
+
+		if not await is_logged_in(page):
+			if await has_session_cookie(page):
+				print(f'[WARN] {account_name}: Stale session cookie on login page, forcing email login')
+			await save_login_screenshot(page, provider_name, account_name, 'before-email-login')
+			await login_with_email_form(
+				page,
+				email,
+				password,
+				timeout_ms,
+				provider=provider_name,
+				account_name=account_name,
 			)
+		else:
+			print(f'[INFO] {account_name}: Browser profile already logged in')
 
-			page = await context.new_page()
+		console_url = f'{provider_config.domain}/console'
+		user_profile = await verify_browser_login(page, console_url, timeout_ms)
+		if not user_profile:
+			cookies = await context.cookies()
+			cookie_names = [c.get('name') for c in cookies if c.get('name')]
+			print(f'[FAILED] {account_name}: Login failed - /api/user/self not verified')
+			debug_print(f'[INFO] {account_name}: Current URL: {page.url}')
+			debug_print(f'[INFO] {account_name}: Got cookies: {cookie_names}')
+			await save_login_screenshot(page, provider_name, account_name, 'not-authenticated')
+			await context.close()
+			return None
 
-			try:
-				print(f'[处理中] {account_name}: 访问登录页获取 WAF cookies...')
+		cookies = await context.cookies()
+		all_cookies: dict[str, str] = {}
+		for cookie in cookies:
+			cookie_name, cookie_value = cookie.get('name'), cookie.get('value')
+			if cookie_name and cookie_value:
+				all_cookies[cookie_name] = cookie_value
+		api_user = str(user_profile['id']) if user_profile.get('id') is not None else None
 
-				await page.goto(login_url, wait_until='networkidle')
+		success_msg = f'[SUCCESS] {account_name}: Login successful, got {len(all_cookies)} cookies'
+		if is_debug_enabled() and api_user:
+			success_msg += f', api_user={api_user}'
+		print(success_msg)
+		await context.close()
+		return BrowserLoginResult(cookies=all_cookies, api_user=api_user)
 
-				try:
-					await page.wait_for_function('document.readyState === "complete"', timeout=5000)
-				except Exception:
-					await page.wait_for_timeout(3000)
-
-				cookies = await page.context.cookies()
-
-				waf_cookies = {}
-				for cookie in cookies:
-					cookie_name = cookie.get('name')
-					cookie_value = cookie.get('value')
-					if cookie_name in required_cookies and cookie_value is not None:
-						waf_cookies[cookie_name] = cookie_value
-
-				print(f'[信息] {account_name}: 获取到 {len(waf_cookies)}/{len(required_cookies)} 个 WAF cookies')
-
-				missing_cookies = [c for c in required_cookies if c not in waf_cookies]
-
-				if missing_cookies:
-					print(f'[失败] {account_name}: 缺少 WAF cookies: {missing_cookies}')
-					await context.close()
-					return None
-
-				print(f'[成功] {account_name}: 成功获取所有 WAF cookies')
-
-				await context.close()
-
-				return waf_cookies
-
-			except Exception as e:
-				print(f'[失败] {account_name}: 获取 WAF cookies 时发生错误: {e}')
-				if context:
-					await context.close()
-				return None
+	except Exception as e:
+		print(f'[FAILED] {account_name}: Error during login: {e}')
+		if page is not None:
+			await save_login_screenshot(page, provider_name, account_name, 'login-error')
+		await context.close()
+		return None
 
 
 def get_user_info(client, headers, user_info_url: str):
@@ -136,9 +236,16 @@ def get_user_info(client, headers, user_info_url: str):
 
 		if response.status_code == 200 and response.headers.get('content-type', '').startswith('application/json'):
 			return parse_user_info_payload(response.json(), response.status_code)
-		return {'success': False, 'error': f'获取用户信息失败: HTTP {response.status_code}'}
+		return {'success': False, 'error': format_http_error(response.status_code)}
 	except Exception as e:
 		return {'success': False, 'error': f'获取用户信息失败: {str(e)[:50]}...'}
+
+
+def format_http_error(status_code: int) -> str:
+	"""保留状态码，并为登录失效给出可执行的处理说明。"""
+	if status_code == 401:
+		return 'HTTP 401：登录凭据失效或不匹配，请重新登录站点并更新 session 和 api_user'
+	return f'HTTP {status_code}'
 
 
 def parse_user_info_payload(data: dict, status_code: int = 200):
@@ -153,7 +260,10 @@ def parse_user_info_payload(data: dict, status_code: int = 200):
 			'used_quota': used_quota,
 			'display': f'当前余额: ${quota}, 已用: ${used_quota}',
 		}
-	return {'success': False, 'error': f'获取用户信息失败: HTTP {status_code}'}
+	return {
+		'success': False,
+		'error': format_http_error(status_code) if status_code != 200 else data.get('message', '获取用户信息失败'),
+	}
 
 
 async def prepare_cookies(account_name: str, provider_config, user_cookies: dict) -> dict | None:
@@ -162,15 +272,14 @@ async def prepare_cookies(account_name: str, provider_config, user_cookies: dict
 
 	if provider_config.needs_waf_cookies():
 		login_url = f'{provider_config.domain}{provider_config.login_path}'
-		waf_cookies = await get_waf_cookies_with_playwright(account_name, login_url, provider_config.waf_cookie_names)
+		waf_cookies = await get_waf_cookies_with_browser(
+			account_name, login_url, provider_config.waf_cookie_names, use_proxy=provider_config.use_proxy
+		)
 		if not waf_cookies:
 			print(f'[失败] {account_name}: 无法获取 WAF cookies')
 			return None
 	else:
-		print(
-			f'[信息] {account_name}: 服务商 {provider_config.name} 无需绕过 WAF，'
-			f'直接使用用户 cookies'
-		)
+		print(f'[信息] {account_name}: 服务商 {provider_config.name} 无需绕过 WAF，直接使用用户 cookies')
 
 	return {**waf_cookies, **user_cookies}
 
@@ -216,102 +325,101 @@ def parse_json_response(response: dict):
 
 def parse_browser_check_in_response(response: dict, account_name: str) -> CheckInAttempt:
 	"""解析浏览器上下文里的签到响应。"""
+	status = response.get('status')
+	if status and status != 200:
+		error = format_http_error(status)
+		print(f'[失败] {account_name}: 签到失败 - {error}')
+		return CheckInAttempt(False, error)
+
 	result = parse_json_response(response)
 	if result:
 		return parse_check_in_result(result, account_name)
-
-	status = response.get('status')
-	if status and status != 200:
-		print(f'[失败] {account_name}: 签到失败 - HTTP {status}')
-		return CheckInAttempt(False, f'HTTP {status}')
 
 	print(f'[失败] {account_name}: 签到失败 - 响应格式无效')
 	return CheckInAttempt(False, '响应格式无效')
 
 
 async def check_in_with_browser(account: AccountConfig, account_name: str, provider_config):
-	"""在同一个浏览器上下文中完成 WAF 校验和 API 请求。"""
+	"""复用上游浏览器启动逻辑，在同一个上下文中完成 WAF 校验和 API 请求。"""
+	api_user = account.api_user
+	if not api_user:
+		return CheckInAttempt(False, 'Cookie 登录缺少 api_user'), None, None
 	print(f'[处理中] {account_name}: 启动浏览器执行签到请求...')
+	settings = load_browser_login_settings(account_name, account.provider, persist_profile=False)
+	context = None
+	try:
+		context = await launch_login_context(settings, use_proxy=provider_config.use_proxy)
+		page = await context.new_page()
+		await prepare_browser_page(page)
+		await page.goto(
+			f'{provider_config.domain}{provider_config.login_path}',
+			wait_until='domcontentloaded',
+			timeout=settings.wait_timeout_ms,
+		)
+		await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
 
-	async with async_playwright() as p:
-		import tempfile
+		domain = urlparse(provider_config.domain).hostname
+		await context.add_cookies(
+			[
+				{
+					'name': key,
+					'value': str(value),
+					'domain': domain,
+					'path': '/',
+					'httpOnly': True,
+					'secure': provider_config.domain.startswith('https://'),
+					'sameSite': 'Lax',
+				}
+				for key, value in parse_cookies(account.cookies).items()
+			]
+		)
 
-		with tempfile.TemporaryDirectory() as temp_dir:
-			context = await p.chromium.launch_persistent_context(
-				user_data_dir=temp_dir,
-				headless=True,
-				user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
-				viewport={'width': 1920, 'height': 1080},
-				args=[
-					'--disable-blink-features=AutomationControlled',
-					'--disable-dev-shm-usage',
-					'--no-sandbox',
-				],
+		if provider_config.name == 'anyrouter':
+			await page.goto(
+				f'{provider_config.domain}/console/token',
+				wait_until='domcontentloaded',
+				timeout=settings.wait_timeout_ms,
 			)
+			await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
 
-			try:
-				page = await context.new_page()
-				await page.goto(f'{provider_config.domain}{provider_config.login_path}', wait_until='networkidle')
+		user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
+		before_response = await browser_fetch_json(page, user_info_url, 'GET', provider_config.api_user_key, api_user)
+		user_info_before = parse_user_info_payload(
+			parse_json_response(before_response) or {}, before_response['status']
+		)
+		if not user_info_before.get('success'):
+			error = user_info_before.get('error', '获取用户信息失败')
+			print(f'[失败] {account_name}: {error}')
+			return CheckInAttempt(False, error), user_info_before, None
+		print(f'[签到前] {user_info_before["display"]}')
 
-				domain = urlparse(provider_config.domain).hostname
-				user_cookies = parse_cookies(account.cookies)
-				await context.add_cookies([
-					{
-						'name': key,
-						'value': str(value),
-						'domain': domain,
-						'path': '/',
-						'httpOnly': False,
-						'secure': True,
-						'sameSite': 'Lax',
-					}
-					for key, value in user_cookies.items()
-				])
+		if provider_config.needs_manual_check_in():
+			print(f'[网络] {account_name}: 在浏览器上下文执行签到请求')
+			sign_in_url = f'{provider_config.domain}{provider_config.sign_in_path}'
+			sign_in_response = await browser_fetch_json(
+				page, sign_in_url, 'POST', provider_config.api_user_key, api_user
+			)
+			print(f'[响应] {account_name}: 响应状态码 {sign_in_response["status"]}')
+			api_attempt = parse_browser_check_in_response(sign_in_response, account_name)
+		else:
+			api_attempt = CheckInAttempt(
+				bool(user_info_before and user_info_before.get('success')),
+				None if user_info_before.get('success') else user_info_before.get('error', '获取用户信息失败'),
+			)
+			if api_attempt.success:
+				print(f'[信息] {account_name}: 签到已自动完成（通过用户信息请求触发）')
 
-				if provider_config.name == 'anyrouter':
-					await page.goto(f'{provider_config.domain}/console/token', wait_until='networkidle')
-
-				user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
-				before_response = await browser_fetch_json(
-					page, user_info_url, 'GET', provider_config.api_user_key, account.api_user
-				)
-				user_info_before = parse_user_info_payload(
-					parse_json_response(before_response) or {}, before_response['status']
-				)
-
-				if user_info_before and user_info_before.get('success'):
-					print(f'[签到前] {user_info_before["display"]}')
-				elif user_info_before:
-					print(f'[警告] {user_info_before.get("error", "未知错误")}')
-
-				if provider_config.needs_manual_check_in():
-					print(f'[网络] {account_name}: 在浏览器上下文执行签到请求')
-					sign_in_url = f'{provider_config.domain}{provider_config.sign_in_path}'
-					sign_in_response = await browser_fetch_json(
-						page, sign_in_url, 'POST', provider_config.api_user_key, account.api_user
-					)
-					print(f'[响应] {account_name}: 响应状态码 {sign_in_response["status"]}')
-					api_attempt = parse_browser_check_in_response(sign_in_response, account_name)
-				else:
-					print(f'[信息] {account_name}: 签到已自动完成（通过用户信息请求触发）')
-					api_attempt = CheckInAttempt(True)
-
-				after_response = await browser_fetch_json(
-					page, user_info_url, 'GET', provider_config.api_user_key, account.api_user
-				)
-				user_info_after = parse_user_info_payload(
-					parse_json_response(after_response) or {}, after_response['status']
-				)
-
-				if user_info_after and user_info_after.get('success'):
-					print(f'[签到后] {user_info_after["display"]}')
-
-				return api_attempt, user_info_before, user_info_after
-			except Exception as e:
-				print(f'[失败] {account_name}: 浏览器签到过程中发生错误: {e}')
-				return CheckInAttempt(False, str(e)[:100]), None, None
-			finally:
-				await context.close()
+		after_response = await browser_fetch_json(page, user_info_url, 'GET', provider_config.api_user_key, api_user)
+		user_info_after = parse_user_info_payload(parse_json_response(after_response) or {}, after_response['status'])
+		if user_info_after.get('success'):
+			print(f'[签到后] {user_info_after["display"]}')
+		return api_attempt, user_info_before, user_info_after
+	except Exception as e:
+		print(f'[失败] {account_name}: 浏览器签到过程中发生错误: {e}')
+		return CheckInAttempt(False, str(e)[:100]), None, None
+	finally:
+		if context is not None:
+			await context.close()
 
 
 def parse_check_in_result(result: dict | None, account_name: str) -> CheckInAttempt:
@@ -358,15 +466,13 @@ def execute_check_in(client, account_name: str, provider_config, headers: dict):
 				print(f'[失败] {account_name}: 签到失败 - 响应格式无效')
 				return CheckInAttempt(False, '响应格式无效')
 	else:
-		print(f'[失败] {account_name}: 签到失败 - HTTP {response.status_code}')
-		return CheckInAttempt(False, f'HTTP {response.status_code}')
+		error = format_http_error(response.status_code)
+		print(f'[失败] {account_name}: 签到失败 - {error}')
+		return CheckInAttempt(False, error)
 
 
 async def check_in_account(
-	account: AccountConfig,
-	account_index: int,
-	app_config: AppConfig,
-	signin_history: dict[str, SigninRecord]
+	account: AccountConfig, account_index: int, app_config: AppConfig, signin_history: dict[str, SigninRecord]
 ) -> SigninResult:
 	"""为单个账号执行签到操作，基于余额变化判断结果
 
@@ -380,29 +486,9 @@ async def check_in_account(
 	    SigninResult: 签到结果
 	"""
 	account_name = account.get_display_name(account_index)
-	account_key = f'{account.provider}_{account.api_user}'
+	account_key = f'{account.provider}_{account.api_user or account_index + 1}'
 
 	print(f'\n[处理中] 开始处理 {account_name}')
-
-	# 获取上次签到记录
-	last_record = signin_history.get(account_key)
-	last_signin_time = last_record.time if last_record else None
-	last_balance = last_record.balance if last_record else None
-
-	# 检查冷却期
-	if is_in_cooldown(last_signin_time):
-		from utils.result import format_time_remaining, get_next_signin_time
-		next_time = get_next_signin_time(last_signin_time)
-		remaining = format_time_remaining(next_time)
-		print(f'[跳过] {account_name}: 冷却期内，剩余 {remaining}')
-		return SigninResult(
-			account_key=account_key,
-			account_name=account_name,
-			status=SigninStatus.SKIPPED,
-			balance_before=last_balance,
-			balance_after=last_balance,
-			last_signin=last_signin_time,
-		)
 
 	provider_config = app_config.get_provider(account.provider)
 	if not provider_config:
@@ -415,6 +501,45 @@ async def check_in_account(
 		)
 
 	print(f'[信息] {account_name}: 使用服务商 "{account.provider}" ({provider_config.domain})')
+
+	if account.email and account.password:
+		login_result = await login_with_credentials(
+			account_name, provider_config, account.provider, account.email, account.password
+		)
+		if not login_result or not (login_result.api_user or account.api_user):
+			return SigninResult(
+				account_key=account_key,
+				account_name=account_name,
+				status=SigninStatus.ERROR,
+				error='邮箱密码登录失败，未使用旧 Cookie 继续签到',
+			)
+		account = replace(
+			account,
+			cookies=login_result.cookies,
+			api_user=login_result.api_user or account.api_user,
+		)
+		account_key = f'{account.provider}_{account.api_user}'
+
+	# 获取上次签到记录
+	last_record = signin_history.get(account_key)
+	last_signin_time = last_record.time if last_record else None
+	last_balance = last_record.balance if last_record else None
+
+	# 检查冷却期
+	if is_in_cooldown(last_signin_time):
+		from utils.result import format_time_remaining, get_next_signin_time
+
+		next_time = get_next_signin_time(last_signin_time)
+		remaining = format_time_remaining(next_time)
+		print(f'[跳过] {account_name}: 冷却期内，剩余 {remaining}')
+		return SigninResult(
+			account_key=account_key,
+			account_name=account_name,
+			status=SigninStatus.SKIPPED,
+			balance_before=last_balance,
+			balance_after=last_balance,
+			last_signin=last_signin_time,
+		)
 
 	user_cookies = parse_cookies(account.cookies)
 	if not user_cookies:
@@ -430,34 +555,36 @@ async def check_in_account(
 		api_attempt, user_info_before, user_info_after = await check_in_with_browser(
 			account, account_name, provider_config
 		)
-		balance_before = user_info_before.get('quota') if user_info_before and user_info_before.get('success') else last_balance
+		balance_before = (
+			user_info_before.get('quota') if user_info_before and user_info_before.get('success') else last_balance
+		)
 		balance_after = user_info_after.get('quota') if user_info_after and user_info_after.get('success') else None
 
-		if balance_after is not None:
+		if not api_attempt.success:
+			status, balance_diff = SigninStatus.FAILED, None
+		elif balance_after is not None:
 			status, balance_diff = analyze_balance_change(balance_after, balance_before, last_signin_time)
 		else:
 			status = SigninStatus.SUCCESS if api_attempt.success else SigninStatus.FAILED
 			balance_diff = None
 
 		from utils.result import UserBalance
+
 		user_balance = None
 		if user_info_after and user_info_after.get('success'):
-			user_balance = UserBalance(
-				quota=user_info_after['quota'],
-				used_quota=user_info_after['used_quota']
-			)
+			user_balance = UserBalance(quota=user_info_after['quota'], used_quota=user_info_after['used_quota'])
 
 		return SigninResult(
 			account_key=account_key,
 			account_name=account_name,
 			status=status,
-			balance_before=balance_before or last_balance,
+			balance_before=balance_before if balance_before is not None else last_balance,
 			balance_after=balance_after,
 			balance_diff=balance_diff,
 			user_info=user_balance,
 			error=api_attempt.error if status == SigninStatus.FAILED else None,
 			last_signin=last_signin_time,
-			new_record=SigninRecord(time=datetime.now(), balance=balance_after),
+			new_record=SigninRecord(time=datetime.now(), balance=balance_after) if api_attempt.success else None,
 		)
 
 	all_cookies = await prepare_cookies(account_name, provider_config, user_cookies)
@@ -469,7 +596,7 @@ async def check_in_account(
 			error='无法获取 WAF cookies',
 		)
 
-	client = httpx.Client(timeout=30.0)
+	client = httpx.Client(timeout=30.0, proxy=get_proxy_server(use_proxy=provider_config.use_proxy), trust_env=False)
 
 	try:
 		client.cookies.update(all_cookies)
@@ -492,7 +619,9 @@ async def check_in_account(
 
 		# 签到前获取余额
 		user_info_before = get_user_info(client, headers, user_info_url)
-		balance_before = user_info_before.get('quota') if user_info_before and user_info_before.get('success') else last_balance
+		balance_before = (
+			user_info_before.get('quota') if user_info_before and user_info_before.get('success') else last_balance
+		)
 
 		if user_info_before and user_info_before.get('success'):
 			print(f'[签到前] {user_info_before["display"]}')
@@ -503,8 +632,12 @@ async def check_in_account(
 		if provider_config.needs_manual_check_in():
 			api_attempt = execute_check_in(client, account_name, provider_config, headers)
 		else:
-			print(f'[信息] {account_name}: 签到已自动完成（通过用户信息请求触发）')
-			api_attempt = CheckInAttempt(True)
+			api_attempt = CheckInAttempt(
+				bool(user_info_before and user_info_before.get('success')),
+				None if user_info_before.get('success') else user_info_before.get('error', '获取用户信息失败'),
+			)
+			if api_attempt.success:
+				print(f'[信息] {account_name}: 签到已自动完成（通过用户信息请求触发）')
 
 		# 签到后获取余额
 		user_info_after = get_user_info(client, headers, user_info_url)
@@ -514,7 +647,9 @@ async def check_in_account(
 			print(f'[签到后] {user_info_after["display"]}')
 
 		# 基于余额变化分析签到结果
-		if balance_after is not None:
+		if not api_attempt.success:
+			status, balance_diff = SigninStatus.FAILED, None
+		elif balance_after is not None:
 			status, balance_diff = analyze_balance_change(balance_after, balance_before, last_signin_time)
 
 			if status == SigninStatus.SUCCESS:
@@ -537,21 +672,19 @@ async def check_in_account(
 
 		# 构建用户信息
 		from utils.result import UserBalance
+
 		user_balance = None
 		if user_info_after and user_info_after.get('success'):
-			user_balance = UserBalance(
-				quota=user_info_after['quota'],
-				used_quota=user_info_after['used_quota']
-			)
+			user_balance = UserBalance(quota=user_info_after['quota'], used_quota=user_info_after['used_quota'])
 
 		# 创建签到记录（用于更新历史）
-		new_record = SigninRecord(time=datetime.now(), balance=balance_after)
+		new_record = SigninRecord(time=datetime.now(), balance=balance_after) if api_attempt.success else None
 
 		return SigninResult(
 			account_key=account_key,
 			account_name=account_name,
 			status=status,
-			balance_before=balance_before or last_balance,
+			balance_before=balance_before if balance_before is not None else last_balance,
 			balance_after=balance_after,
 			balance_diff=balance_diff,
 			user_info=user_balance,
@@ -604,12 +737,14 @@ async def main():
 			account_name = account.get_display_name(i)
 			account_key = f'{account.provider}_{account.api_user}'
 			print(f'[失败] {account_name} 处理异常: {e}')
-			results.append(SigninResult(
-				account_key=account_key,
-				account_name=account_name,
-				status=SigninStatus.ERROR,
-				error=str(e)[:100],
-			))
+			results.append(
+				SigninResult(
+					account_key=account_key,
+					account_name=account_name,
+					status=SigninStatus.ERROR,
+					error=str(e)[:100],
+				)
+			)
 
 	# 统计结果 - 四类状态互斥
 	success_count = sum(1 for r in results if r.is_success)  # SUCCESS + FIRST_RUN
@@ -629,7 +764,14 @@ async def main():
 		print(f'[数据库] 已保存 {saved_count} 条签到记录')
 
 	# 检查余额变化
-	current_balances = {r.account_key: r.balance_after for r in results if r.balance_after is not None}
+	current_balances: dict[str, float | dict[str, float | None]] = {
+		r.account_key: {
+			'quota': r.balance_after,
+			'used': r.user_info.used_quota if r.user_info else None,
+		}
+		for r in results
+		if r.balance_after is not None
+	}
 	current_balance_hash = generate_balance_hash(current_balances) if current_balances else None
 
 	balance_changed = False
@@ -649,8 +791,10 @@ async def main():
 		save_balance_hash(current_balance_hash)
 
 	# 判断是否需要发送通知
-	need_notify = failed_count > 0 or balance_changed or any(
-		r.status in (SigninStatus.SUCCESS, SigninStatus.SKIPPED) for r in results
+	need_notify = (
+		failed_count > 0
+		or balance_changed
+		or any(r.status in (SigninStatus.SUCCESS, SigninStatus.SKIPPED) for r in results)
 	)
 
 	if need_notify:

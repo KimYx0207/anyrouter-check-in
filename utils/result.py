@@ -270,7 +270,7 @@ def save_balance_hash(balance_hash: str) -> bool:
 		return False
 
 
-def generate_balance_hash(balances: dict[str, float]) -> str:
+def generate_balance_hash(balances: dict[str, float | dict[str, float | None]]) -> str:
 	"""生成余额数据的 hash
 
 	Args:

@@ -12,6 +12,14 @@
 
 ## 更新日志
 
+### v2.10.0 (2026-09-14)
+
+- 同步上游至 `3b16662`（2026-09-11），接入 CloakBrowser、浏览器登录验证、按服务商配置代理和调试截图。
+- GitHub Actions 使用 Linux + Xvfb；保留 Windows 本地运行、中文通知、SQLite 和 24 小时签到历史。
+- 修复 HTTP 401 的提示、失败记录误入冷却期，以及 Actions 缓存未保存 `data/` 下签到历史的问题。
+- 保留多行 Secret、`signin_method` 旧配置和 Gotify Header 认证；同步通知服务业务错误检查。
+- 通过 GitHub 登录的账号仍使用 **AnyRouter 网站的 session 和 api_user**。GitHub Cookie、Token 或密码不能直接代替；更新代码也不会刷新已经失效的 session。
+
 ### v2.9.3 (2026-04-28)
 
 - 🐛 **修复冷却通知签到时间**
@@ -280,7 +288,7 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 # 3. 安装依赖
 uv sync --dev
-uv run playwright install chromium
+uv run python -m cloakbrowser install
 
 # 4. 配置账号
 copy env.template .env
@@ -373,8 +381,9 @@ scripts\setup_task.bat
 
 - `name`（可选）：账号显示名称，用于日志和通知
 - `provider`（可选）：平台类型，默认 `anyrouter`，支持通过 `PROVIDERS` 环境变量自定义其他平台
-- `cookies`（必需）：包含 session 的对象
-- `api_user`（必需）：API 用户标识符
+- `cookies`：通过 GitHub 登录后，填写 AnyRouter 网站的 session
+- `api_user`：Cookie 登录时必填，必须属于同一个 AnyRouter 账号
+- `email` + `password`：可选的站点邮箱密码登录，登录后自动获取 session 和 api_user；仅支持站点自身的登录密码，不是 GitHub 密码
 
 **重要提示：**
 
@@ -502,11 +511,11 @@ CUSTOM_SMTP_SERVER=smtp.gmail.com:587
 
 ### 3. 签到失败，提示 401 错误
 
-**原因**：Cookies 已过期（有效期约 1 个月）
+**原因**：登录凭据已失效，或 session 与 api_user 不匹配。Session 通常约一个月有效，也可能提前失效。
 
 **解决方案**：
 
-1. 重新登录对应的平台网站（如 anyrouter.top）
+1. 分别使用对应 GitHub 账号重新登录平台网站（如 anyrouter.top）
 2. 按 F12 获取新的 session 值
 3. 更新 `.env` 文件中的 session
 
@@ -589,7 +598,7 @@ scripts\run_checkin.bat manual
 ### 签到机制说明
 
 **AnyRouter 签到流程：**
-1. 使用 Playwright 新 headless 模式访问登录页获取 WAF cookies（acw_tc, cdn_sec_tc, acw_sc__v2）
+1. 使用 CloakBrowser（本地默认无头模式）访问登录页获取 WAF cookies（acw_tc, cdn_sec_tc, acw_sc__v2）
 2. 合并 WAF cookies + session cookie
 3. 调用 `/api/user/sign_in` 接口完成签到
 4. 对比签到前后余额验证结果
@@ -603,7 +612,7 @@ scripts\run_checkin.bat manual
 ### 脚本工作原理
 
 **AnyRouter 签到策略：**
-1. 使用 Playwright 新 headless 模式访问登录页获取 WAF cookies（不弹出窗口）
+1. 使用 CloakBrowser（本地默认无头模式）访问登录页获取 WAF cookies（不弹出窗口）
 2. 合并 WAF cookies 与用户 session cookie
 3. 调用 `/api/user/sign_in` 接口
 4. 对比签到前后余额验证结果
@@ -613,7 +622,7 @@ scripts\run_checkin.bat manual
 
 ### WAF 绕过机制
 
-- 使用 Playwright 新 headless 模式（Chrome 138+）
+- 使用 CloakBrowser（本地默认无头模式）
 - 优化浏览器参数，更难被 WAF 检测
 - 完全后台运行，不弹出窗口
 - 访问登录页面获取 WAF cookies（如 acw_tc）

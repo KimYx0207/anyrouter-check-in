@@ -5,7 +5,7 @@ description = "Anyrouter or newapi system check in"
 requires-python = ">=3.11"
 dependencies = [
   "httpx[http2]>=0.24.0",
-  "playwright>=1.40.0",
+  "cloakbrowser>=0.3.0",
   "python-dotenv>=1.0.0",
   "tenacity>=8.2.0"
 ]
@@ -20,25 +20,8 @@ dev = [
   "ruff>=0.1.0",
   "pre-commit>=3.0.0",
   "mypy>=1.0.0",
-  "bandit[toml]>=1.7.0",
-  "types-requests>=2.31.0"
+  "bandit[toml]>=1.7.0"
 ]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-addopts = [
-  "--cov=.",
-  "--cov-report=term-missing",
-  "--cov-report=html",
-  "--cov-report=xml",
-  "--cov-branch",
-  "-v"
-]
-asyncio_mode = "auto"
-markers = ["asyncio: mark a test as running with asyncio"]
 
 [tool.ruff]
 line-length = 120
@@ -74,6 +57,21 @@ skips = ["B101", "B601"]
 
 [tool.bandit.assert_used]
 skips = ["*_test.py", "test_*.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+  "--cov=.",
+  "--cov-report=term-missing",
+  "--cov-report=html",
+  "--cov-report=xml",
+  "--cov-branch",
+  "-v"
+]
+asyncio_mode = "auto"
 
 [tool.coverage.run]
 source = ["."]

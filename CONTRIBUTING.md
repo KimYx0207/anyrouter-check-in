@@ -32,8 +32,8 @@ cd anyrouter-check-in
 # 安装所有依赖（包括开发依赖）
 uv sync --dev
 
-# 安装 Playwright 浏览器
-uv run playwright install chromium
+# 安装 CloakBrowser 浏览器；也可以通过 CLOAKBROWSER_BINARY_PATH 指向本地浏览器
+uv run python -m cloakbrowser install
 ```
 
 ### 配置环境变量
@@ -42,7 +42,7 @@ uv run playwright install chromium
 
 ```bash
 # 示例配置（注意：JSON 必须是单行格式）
-ANYROUTER_ACCOUNTS=[{"name":"测试账号","cookies":{"session":"xxx"},"api_user":"12345"}]
+ANYROUTER_ACCOUNTS=[{"name":"测试账号","email":"your@email.com","password":"your_password"}]
 ```
 
 ### 安装 pre-commit 钩子
@@ -167,23 +167,25 @@ uv run pytest tests/ --cov=. --cov-report=html
 import pytest
 from unittest.mock import patch
 
+
 def test_parse_cookies():
-    from checkin import parse_cookies
+	from checkin import parse_cookies
 
-    # 测试字典格式
-    cookies = {"session": "abc123"}
-    result = parse_cookies(cookies)
-    assert result == {"session": "abc123"}
+	# 测试字典格式
+	cookies = {'session': 'abc123'}
+	result = parse_cookies(cookies)
+	assert result == {'session': 'abc123'}
 
-    # 测试字符串格式
-    cookies_str = "session=abc123; user=test"
-    result = parse_cookies(cookies_str)
-    assert result == {"session": "abc123", "user": "test"}
+	# 测试字符串格式
+	cookies_str = 'session=abc123; user=test'
+	result = parse_cookies(cookies_str)
+	assert result == {'session': 'abc123', 'user': 'test'}
+
 
 @pytest.mark.asyncio
 async def test_check_in_account():
-    # 异步测试示例
-    pass
+	# 异步测试示例
+	pass
 ```
 
 ## 🚀 提交 Pull Request

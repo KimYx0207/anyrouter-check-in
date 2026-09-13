@@ -28,7 +28,8 @@ def test_execute_check_in_preserves_http_error_status():
 	result = execute_check_in(FakeClient(), 'AnyRouter主账号', provider_config, {})
 
 	assert result.success is False
-	assert result.error == 'HTTP 401'
+	assert result.error.startswith('HTTP 401')
+	assert 'session 和 api_user' in result.error
 
 
 def test_parse_browser_check_in_response_preserves_non_json_http_status():
@@ -37,4 +38,5 @@ def test_parse_browser_check_in_response_preserves_non_json_http_status():
 	result = parse_browser_check_in_response(response, 'AnyRouter主账号')
 
 	assert result.success is False
-	assert result.error == 'HTTP 401'
+	assert result.error.startswith('HTTP 401')
+	assert 'session 和 api_user' in result.error

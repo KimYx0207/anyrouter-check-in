@@ -28,6 +28,10 @@ htmlcov/
 # 运行时数据（签到产生）
 data/
 balance_hash.txt
+.browser_profiles/
+checkin_screenshots/
+.codex/
+.meta-kim/
 
 # IDE
 .idea/

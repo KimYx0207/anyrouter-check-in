@@ -17,16 +17,19 @@
 4. 左侧找到 "Cookies" → 选择网站域名
 5. 找到名为 `session` 的 cookie，复制其值
 
-### 方法二：使用本项目脚本
+### 两个 GitHub 登录账号
 
-```bash
-# 运行一次本地签到，会自动显示 cookie 信息
-uv run checkin.py
-```
+分别在独立浏览器配置或无痕窗口中，通过 GitHub 登录 AnyRouter。在 `anyrouter.top` 域名下获取 `session`，再从该站点的请求头获取同一账号的 `new-api-user`，填入 `api_user`。
+
+这里需要的是 **AnyRouter 的 Cookie**。GitHub 域名下的 Cookie、GitHub Token 或 GitHub 密码不能代替它。脚本不会自动刷新 GitHub OAuth 登录后已经过期的 AnyRouter session。
+
+如果已在站点绑定独立的邮箱密码，也可以配置 `email` + `password`，由浏览器登录后取得 session；仅有 GitHub 登录的账号继续使用 Cookie 方式。
 
 ## ⚙️ 配置 GitHub Secrets
 
-进入你 Fork 的仓库，依次点击：`Settings` → `Secrets and variables` → `Actions` → `New repository secret`
+进入你 Fork 的仓库，依次点击：`Settings` → `Environments` → `production` → `Environment secrets`，更新 `ANYROUTER_ACCOUNTS`。
+
+Workflow 使用 `production` 环境；同名环境 Secret 会覆盖仓库 Secret，应在这里更新已有的两个账号配置。
 
 ### 必需配置
 
@@ -89,7 +92,7 @@ uv run checkin.py
 
 1. 进入仓库的 `Actions` 标签
 2. 如果看到提示，点击 "I understand my workflows, go ahead and enable them"
-3. 找到 "公益站 自动签到" workflow
+3. 找到 "AnyRouter 自动签到" workflow
 4. 点击 "Enable workflow"
 
 ## ⏰ 运行时间
@@ -114,7 +117,7 @@ schedule:
 配置完成后，可以手动触发一次测试：
 
 1. 进入 `Actions` 标签
-2. 选择 "公益站 自动签到" workflow
+2. 选择 "AnyRouter 自动签到" workflow
 3. 点击 "Run workflow" → "Run workflow"
 4. 等待执行完成，查看日志
 
@@ -133,15 +136,16 @@ schedule:
 
 ### Q: Cookie 多久会过期？
 
-**A:** 通常 30-90 天，过期后需要重新登录获取新的 cookie
+**A:** 通常约一个月，也可能提前失效。若两个接口均返回 HTTP 401，应重新登录 AnyRouter 并更新同一账号的 session 和 api_user；同步代码无法刷新失效凭据。
 
 ### Q: 可以添加其他平台吗？
 
-**A:** 可以！编辑 `providers.json` 添加新平台配置，然后在 `ANYROUTER_ACCOUNTS` 中添加对应账号
+**A:** 可以。通过 `PROVIDERS` Secret 添加服务商配置，再在 `ANYROUTER_ACCOUNTS` 中引用其名称。内置服务商允许只覆盖部分字段，例如 `{"agentrouter":{"use_proxy":true}}`。
 
 ## 🔒 安全说明
 
-- ✅ 所有敏感数据（cookies、tokens）都存储在 GitHub Secrets 中，加密保护
+- 账号凭据配置在 GitHub Secrets；Cookie 签到使用临时浏览器上下文。
+- 邮箱密码登录可按 provider 的 `persist_profile` 设置缓存浏览器登录状态。
 - ✅ 代码中不包含任何敏感信息
 - ✅ 运行日志会自动脱敏，不会泄露完整 cookie
 - ⚠️ 不要将 Secrets 内容分享给他人

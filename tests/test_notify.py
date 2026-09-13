@@ -7,14 +7,12 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
-from dotenv import load_dotenv
 
 # 添加项目根目录到 PATH
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
-
-load_dotenv(project_root / '.env')
 
 from utils.notify import NotificationError, NotificationKit
 
@@ -249,3 +247,20 @@ def test_lazy_initialization():
 		assert kit.pushplus_token == 'test_token'
 	finally:
 		del os.environ['PUSHPLUS_TOKEN']
+
+
+@pytest.mark.parametrize(
+	'payload',
+	[
+		{'ok': False, 'description': 'test failure'},
+		{'errcode': 40001, 'errmsg': 'test failure'},
+		{'StatusCode': 1, 'message': 'test failure'},
+		{'code': 500, 'msg': 'test failure'},
+		{'ret': 100, 'error': 'test failure'},
+	],
+)
+def test_notification_business_errors_are_reported(notification_kit, payload):
+	response = httpx.Response(200, json=payload)
+
+	with pytest.raises(NotificationError, match='test failure'):
+		notification_kit._check_response(response, 'Test')
