@@ -8,6 +8,7 @@
 
 import asyncio
 import json
+import re
 import sys
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -360,12 +361,20 @@ def parse_browser_check_in_response(response: dict, account_name: str) -> CheckI
 async def complete_visible_slider(page, account_name: str) -> bool:
 	"""在站点显示阿里云滑块时完成一次交互，结果仍由后续 API 验证。"""
 	for frame in page.frames:
-		track = frame.locator('.nc_scale').first
-		handle = track.locator('.btn_slide').first
-		if not await handle.is_visible():
-			continue
-		track_box = await track.bounding_box()
-		handle_box = await handle.bounding_box()
+		track = frame.locator('.nc_scale, #aliyunCaptcha-sliding-wrapper').first
+		handle = track.locator('.btn_slide, #aliyunCaptcha-sliding-slider').first
+		if await handle.is_visible():
+			track_box = await track.bounding_box()
+			handle_box = await handle.bounding_box()
+		else:
+			# 新版验证页更换了控件类名，以其明确的滑块提示定位同一个轨道。
+			label = frame.get_by_text(re.compile(r'Please slide to verify|请.*滑动.*验证', re.I)).first
+			if not await label.is_visible():
+				continue
+			track_box = await label.locator('..').bounding_box()
+			if not track_box or not 24 <= track_box['height'] <= 64 or not 180 <= track_box['width'] <= 600:
+				continue
+			handle_box = {**track_box, 'width': track_box['height']}
 		if not track_box or not handle_box or track_box['width'] <= handle_box['width']:
 			continue
 		start_x = handle_box['x'] + handle_box['width'] / 2
@@ -437,6 +446,15 @@ async def check_in_with_browser(account: AccountConfig, account_name: str, provi
 			print(f'[失败] {account_name}: {error}')
 			if is_debug_enabled():
 				debug_print(f'[诊断] {account_name}: 当前页面标题 {await page.title()}')
+				for frame in page.frames:
+					controls = await frame.evaluate(
+						"""() => Array.from(document.querySelectorAll('[id], [class]'))
+							.filter(el => /captcha|slider|nc_|scale|verify/i.test(el.id + ' ' + el.className)
+								&& el.getClientRects().length)
+							.slice(0, 15).map(el => ({tag: el.tagName, id: el.id.slice(0, 80),
+								classes: String(el.className).slice(0, 100)}))"""
+					)
+					debug_print(f'[诊断] {account_name}: 验证控件 {controls}')
 				await save_login_screenshot(page, account.provider, account_name, 'user-info-failed')
 			return CheckInAttempt(False, error), user_info_before, None
 		print(f'[签到前] {user_info_before["display"]}')
