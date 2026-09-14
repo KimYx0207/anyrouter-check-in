@@ -8,7 +8,6 @@
 
 import asyncio
 import json
-import re
 import sys
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -249,7 +248,7 @@ def format_http_error(status_code: int) -> str:
 	return f'HTTP {status_code}'
 
 
-def parse_user_info_payload(data: dict, status_code: int = 200) -> dict:
+def parse_user_info_payload(data: dict, status_code: int = 200):
 	"""解析用户信息响应。"""
 	if status_code == 200 and data.get('success'):
 		user_data = data.get('data', {})
@@ -358,39 +357,6 @@ def parse_browser_check_in_response(response: dict, account_name: str) -> CheckI
 	return CheckInAttempt(False, '响应格式无效')
 
 
-async def complete_visible_slider(page, account_name: str) -> bool:
-	"""在站点显示阿里云滑块时完成一次交互，结果仍由后续 API 验证。"""
-	for frame in page.frames:
-		track = frame.locator('.nc_scale, #aliyunCaptcha-sliding-wrapper').first
-		handle = track.locator('.btn_slide, #aliyunCaptcha-sliding-slider').first
-		if await handle.is_visible():
-			track_box = await track.bounding_box()
-			handle_box = await handle.bounding_box()
-		else:
-			# 新版验证页更换了控件类名，以其明确的滑块提示定位同一个轨道。
-			label = frame.get_by_text(re.compile(r'Please slide to verify|请.*滑动.*验证', re.I)).first
-			if not await label.is_visible():
-				continue
-			track_box = await label.locator('..').bounding_box()
-			if not track_box or not 24 <= track_box['height'] <= 64 or not 180 <= track_box['width'] <= 600:
-				continue
-			handle_box = {**track_box, 'width': track_box['height']}
-		if not track_box or not handle_box or track_box['width'] <= handle_box['width']:
-			continue
-		start_x = handle_box['x'] + handle_box['width'] / 2
-		y = handle_box['y'] + handle_box['height'] / 2
-		end_x = track_box['x'] + track_box['width'] - handle_box['width'] / 2
-		print(f'[验证] {account_name}: 页面要求滑块验证，完成一次交互')
-		await page.mouse.move(start_x, y)
-		await page.mouse.down()
-		try:
-			await page.mouse.move(end_x, y, steps=20)
-		finally:
-			await page.mouse.up()
-		return True
-	return False
-
-
 async def check_in_with_browser(account: AccountConfig, account_name: str, provider_config):
 	"""复用上游浏览器启动逻辑，在同一个上下文中完成 WAF 校验和 API 请求。"""
 	api_user = account.api_user
@@ -403,9 +369,15 @@ async def check_in_with_browser(account: AccountConfig, account_name: str, provi
 		context = await launch_login_context(settings, use_proxy=provider_config.use_proxy)
 		page = await context.new_page()
 		await prepare_browser_page(page)
+		await page.goto(
+			f'{provider_config.domain}{provider_config.login_path}',
+			wait_until='domcontentloaded',
+			timeout=settings.wait_timeout_ms,
+		)
+		await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
+
 		domain = urlparse(provider_config.domain).hostname
 		waf_cookie_names = set(provider_config.waf_cookie_names or [])
-		# 第一次访问就使用账号会话，避免通过验证后才改变其 Cookie 环境。
 		await context.add_cookies(
 			[
 				{
@@ -422,24 +394,13 @@ async def check_in_with_browser(account: AccountConfig, account_name: str, provi
 			]
 		)
 
-		await page.goto(
-			f'{provider_config.domain}{provider_config.login_path}',
-			wait_until='domcontentloaded',
-			timeout=settings.wait_timeout_ms,
-		)
-		await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
-		if account.provider == 'agentrouter' and await complete_visible_slider(page, account_name):
-			await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
-
-		if provider_config.name in {'anyrouter', 'agentrouter'}:
+		if provider_config.name == 'anyrouter':
 			await page.goto(
 				f'{provider_config.domain}/console/token',
 				wait_until='domcontentloaded',
 				timeout=settings.wait_timeout_ms,
 			)
 			await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
-			if account.provider == 'agentrouter' and await complete_visible_slider(page, account_name):
-				await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
 
 		user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
 		before_response = await browser_fetch_json(page, user_info_url, 'GET', provider_config.api_user_key, api_user)
@@ -449,15 +410,6 @@ async def check_in_with_browser(account: AccountConfig, account_name: str, provi
 			print(f'[失败] {account_name}: {error}')
 			if is_debug_enabled():
 				debug_print(f'[诊断] {account_name}: 当前页面标题 {await page.title()}')
-				for frame in page.frames:
-					controls = await frame.evaluate(
-						"""() => Array.from(document.querySelectorAll('[id], [class]'))
-							.filter(el => /captcha|slider|nc_|scale|verify/i.test(el.id + ' ' + el.className)
-								&& el.getClientRects().length)
-							.slice(0, 15).map(el => ({tag: el.tagName, id: el.id.slice(0, 80),
-								classes: String(el.className).slice(0, 100)}))"""
-					)
-					debug_print(f'[诊断] {account_name}: 验证控件 {controls}')
 				await save_login_screenshot(page, account.provider, account_name, 'user-info-failed')
 			return CheckInAttempt(False, error), user_info_before, None
 		print(f'[签到前] {user_info_before["display"]}')

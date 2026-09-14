@@ -9,11 +9,6 @@ on:
         required: false
         default: false
         type: boolean
-      probe_agentrouter:
-        description: 仅比较 AgentRouter 网页请求方式（临时诊断）
-        required: false
-        default: false
-        type: boolean
 
 concurrency:
   group: anyrouter-checkin-${{ github.ref }}
@@ -100,7 +95,6 @@ jobs:
       run: bash scripts/setup_mihomo_proxy.sh
 
     - name: 执行签到
-      if: github.event.inputs.probe_agentrouter != 'true'
       env:
         DEBUG_MODE: ${{ env.DEBUG_MODE }}
         CHECKIN_HEADLESS: false
@@ -127,15 +121,6 @@ jobs:
         BARK_SERVER: ${{ secrets.BARK_SERVER }}
       run: |
         xvfb-run -a --server-args="-screen 0 1920x1080x24" uv run checkin.py
-
-    - name: AgentRouter 请求方式对照
-      if: github.event.inputs.probe_agentrouter == 'true'
-      timeout-minutes: 5
-      env:
-        CHECKIN_HEADLESS: false
-        CHECKIN_HUMANIZE: true
-        ANYROUTER_ACCOUNTS: ${{ secrets.ANYROUTER_ACCOUNTS }}
-      run: xvfb-run -a --server-args="-screen 0 1920x1080x24" uv run scripts/diagnose_agentrouter.py
 
     - name: 上传调试截图
       if: always() && env.DEBUG_MODE == 'true'
