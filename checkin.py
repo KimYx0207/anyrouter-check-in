@@ -357,6 +357,31 @@ def parse_browser_check_in_response(response: dict, account_name: str) -> CheckI
 	return CheckInAttempt(False, '响应格式无效')
 
 
+async def complete_visible_slider(page, account_name: str) -> bool:
+	"""在站点显示阿里云滑块时完成一次交互，结果仍由后续 API 验证。"""
+	for frame in page.frames:
+		track = frame.locator('.nc_scale').first
+		handle = track.locator('.btn_slide').first
+		if not await handle.is_visible():
+			continue
+		track_box = await track.bounding_box()
+		handle_box = await handle.bounding_box()
+		if not track_box or not handle_box or track_box['width'] <= handle_box['width']:
+			continue
+		start_x = handle_box['x'] + handle_box['width'] / 2
+		y = handle_box['y'] + handle_box['height'] / 2
+		end_x = track_box['x'] + track_box['width'] - handle_box['width'] / 2
+		print(f'[验证] {account_name}: 页面要求滑块验证，完成一次交互')
+		await page.mouse.move(start_x, y)
+		await page.mouse.down()
+		try:
+			await page.mouse.move(end_x, y, steps=20)
+		finally:
+			await page.mouse.up()
+		return True
+	return False
+
+
 async def check_in_with_browser(account: AccountConfig, account_name: str, provider_config):
 	"""复用上游浏览器启动逻辑，在同一个上下文中完成 WAF 校验和 API 请求。"""
 	api_user = account.api_user
@@ -375,6 +400,8 @@ async def check_in_with_browser(account: AccountConfig, account_name: str, provi
 			timeout=settings.wait_timeout_ms,
 		)
 		await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
+		if account.provider == 'agentrouter' and await complete_visible_slider(page, account_name):
+			await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
 
 		domain = urlparse(provider_config.domain).hostname
 		waf_cookie_names = set(provider_config.waf_cookie_names or [])

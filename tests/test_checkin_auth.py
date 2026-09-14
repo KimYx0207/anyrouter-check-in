@@ -56,6 +56,45 @@ def test_html_401_preserves_authentication_error():
 
 
 @pytest.mark.asyncio
+async def test_visible_slider_uses_track_bounds_and_releases_mouse():
+	handle = SimpleNamespace(
+		is_visible=AsyncMock(return_value=True),
+		bounding_box=AsyncMock(return_value={'x': 100, 'y': 200, 'width': 40, 'height': 40}),
+	)
+	track = SimpleNamespace(
+		locator=MagicMock(return_value=SimpleNamespace(first=handle)),
+		bounding_box=AsyncMock(return_value={'x': 100, 'y': 200, 'width': 320, 'height': 40}),
+	)
+	frame = SimpleNamespace(locator=MagicMock(return_value=SimpleNamespace(first=track)))
+	mouse = SimpleNamespace(move=AsyncMock(), down=AsyncMock(), up=AsyncMock())
+	page = SimpleNamespace(frames=[frame], mouse=mouse)
+
+	assert await checkin.complete_visible_slider(page, '测试账号') is True
+	assert mouse.move.await_args_list[0].args == (120, 220)
+	assert mouse.move.await_args_list[1].args == (400, 220)
+	mouse.down.assert_awaited_once()
+	mouse.up.assert_awaited_once()
+
+	mouse.move = AsyncMock(side_effect=[None, RuntimeError('drag failed')])
+	mouse.up.reset_mock()
+	with pytest.raises(RuntimeError, match='drag failed'):
+		await checkin.complete_visible_slider(page, '测试账号')
+	mouse.up.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_slider_helper_leaves_normal_page_alone():
+	handle = SimpleNamespace(is_visible=AsyncMock(return_value=False))
+	track = SimpleNamespace(locator=MagicMock(return_value=SimpleNamespace(first=handle)))
+	frame = SimpleNamespace(locator=MagicMock(return_value=SimpleNamespace(first=track)))
+	mouse = SimpleNamespace(move=AsyncMock(), down=AsyncMock(), up=AsyncMock())
+
+	assert await checkin.complete_visible_slider(SimpleNamespace(frames=[frame], mouse=mouse), '测试账号') is False
+	mouse.move.assert_not_awaited()
+	mouse.down.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
 	'cookies',
 	[
