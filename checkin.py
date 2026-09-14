@@ -326,6 +326,21 @@ def parse_json_response(response: dict):
 		return None
 
 
+def parse_browser_user_info_response(response: dict) -> dict:
+	"""区分登录错误与站点防护返回的 HTML，避免掩盖真实失败原因。"""
+	status = response.get('status', 0)
+	payload = parse_json_response(response)
+	if isinstance(payload, dict):
+		return parse_user_info_payload(payload, status)
+	if status != 200:
+		return {'success': False, 'error': format_http_error(status)}
+	content_type = str(response.get('contentType') or '未知')[:100]
+	return {
+		'success': False,
+		'error': f'HTTP {status}，用户信息响应不是有效 JSON（{content_type}），请检查站点验证或网络',
+	}
+
+
 def parse_browser_check_in_response(response: dict, account_name: str) -> CheckInAttempt:
 	"""解析浏览器上下文里的签到响应。"""
 	status = response.get('status')
@@ -389,12 +404,13 @@ async def check_in_with_browser(account: AccountConfig, account_name: str, provi
 
 		user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
 		before_response = await browser_fetch_json(page, user_info_url, 'GET', provider_config.api_user_key, api_user)
-		user_info_before = parse_user_info_payload(
-			parse_json_response(before_response) or {}, before_response['status']
-		)
+		user_info_before = parse_browser_user_info_response(before_response)
 		if not user_info_before.get('success'):
 			error = user_info_before.get('error', '获取用户信息失败')
 			print(f'[失败] {account_name}: {error}')
+			if is_debug_enabled():
+				debug_print(f'[诊断] {account_name}: 当前页面标题 {await page.title()}')
+				await save_login_screenshot(page, account.provider, account_name, 'user-info-failed')
 			return CheckInAttempt(False, error), user_info_before, None
 		print(f'[签到前] {user_info_before["display"]}')
 
@@ -415,7 +431,7 @@ async def check_in_with_browser(account: AccountConfig, account_name: str, provi
 				print(f'[信息] {account_name}: 签到已自动完成（通过用户信息请求触发）')
 
 		after_response = await browser_fetch_json(page, user_info_url, 'GET', provider_config.api_user_key, api_user)
-		user_info_after = parse_user_info_payload(parse_json_response(after_response) or {}, after_response['status'])
+		user_info_after = parse_browser_user_info_response(after_response)
 		if user_info_after.get('success'):
 			print(f'[签到后] {user_info_after["display"]}')
 		return api_attempt, user_info_before, user_info_after

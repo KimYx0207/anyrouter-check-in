@@ -28,6 +28,33 @@ def test_json_401_is_not_treated_as_success():
 	assert attempt.error.startswith('HTTP 401')
 
 
+@pytest.mark.parametrize(
+	'response',
+	[
+		{'status': 200, 'contentType': 'text/html', 'text': '<html>Site verification</html>'},
+		{'status': 200, 'contentType': 'application/json', 'text': 'not-json'},
+		{'status': 200, 'contentType': 'application/json', 'text': '[]'},
+	],
+)
+def test_invalid_user_info_response_reports_format(response):
+	result = checkin.parse_browser_user_info_response(response)
+
+	assert result['success'] is False
+	assert 'HTTP 200' in result['error']
+	assert 'JSON' in result['error']
+	assert response['text'] not in result['error']
+
+
+def test_html_401_preserves_authentication_error():
+	result = checkin.parse_browser_user_info_response(
+		{'status': 401, 'contentType': 'text/html', 'text': '<html>Unauthorized</html>'}
+	)
+
+	assert result['success'] is False
+	assert result['error'].startswith('HTTP 401')
+	assert 'session 和 api_user' in result['error']
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
 	'cookies',
