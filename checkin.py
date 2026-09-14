@@ -248,7 +248,7 @@ def format_http_error(status_code: int) -> str:
 	return f'HTTP {status_code}'
 
 
-def parse_user_info_payload(data: dict, status_code: int = 200):
+def parse_user_info_payload(data: dict, status_code: int = 200) -> dict:
 	"""解析用户信息响应。"""
 	if status_code == 200 and data.get('success'):
 		user_data = data.get('data', {})
