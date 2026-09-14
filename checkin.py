@@ -278,10 +278,13 @@ async def prepare_cookies(account_name: str, provider_config, user_cookies: dict
 		if not waf_cookies:
 			print(f'[失败] {account_name}: 无法获取 WAF cookies')
 			return None
+		# 已保存的防护 Cookie 属于旧浏览器会话，不能替代本次获取的值。
+		waf_cookie_names = set(provider_config.waf_cookie_names or [])
+		user_cookies = {key: value for key, value in user_cookies.items() if key not in waf_cookie_names}
 	else:
 		print(f'[信息] {account_name}: 服务商 {provider_config.name} 无需绕过 WAF，直接使用用户 cookies')
 
-	return {**waf_cookies, **user_cookies}
+	return {**user_cookies, **waf_cookies}
 
 
 async def browser_fetch_json(page, url: str, method: str, api_user_key: str, api_user: str):
@@ -359,6 +362,7 @@ async def check_in_with_browser(account: AccountConfig, account_name: str, provi
 		await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
 
 		domain = urlparse(provider_config.domain).hostname
+		waf_cookie_names = set(provider_config.waf_cookie_names or [])
 		await context.add_cookies(
 			[
 				{
@@ -371,6 +375,7 @@ async def check_in_with_browser(account: AccountConfig, account_name: str, provi
 					'sameSite': 'Lax',
 				}
 				for key, value in parse_cookies(account.cookies).items()
+				if key not in waf_cookie_names
 			]
 		)
 

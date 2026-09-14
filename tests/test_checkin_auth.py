@@ -29,8 +29,16 @@ def test_json_401_is_not_treated_as_success():
 
 
 @pytest.mark.asyncio
-async def test_expired_cookie_stops_before_checkin_and_closes_browser(monkeypatch):
+@pytest.mark.parametrize(
+	'cookies',
+	[
+		{'session': 'test-only', 'acw_tc': 'old-acw', 'cdn_sec_tc': 'old-cdn', 'acw_sc__v2': 'old-v2'},
+		'session=test-only; acw_tc=old-acw; cdn_sec_tc=old-cdn; acw_sc__v2=old-v2',
+	],
+)
+async def test_expired_cookie_stops_before_checkin_and_closes_browser(monkeypatch, cookies):
 	account = make_account()
+	account.cookies = cookies
 	config = AppConfig.load_from_env()
 	page = SimpleNamespace(goto=AsyncMock())
 	context = SimpleNamespace(
@@ -54,7 +62,31 @@ async def test_expired_cookie_stops_before_checkin_and_closes_browser(monkeypatc
 	fetch.assert_awaited_once()
 	assert fetch.await_args.args[2] == 'GET'
 	assert launch.await_args.args[0].persist_profile is False
+	injected_cookies = {cookie['name']: cookie['value'] for cookie in context.add_cookies.await_args.args[0]}
+	assert injected_cookies == {'session': 'test-only'}
 	context.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_http_cookies_keep_fresh_waf_and_discard_old_missing_values(monkeypatch):
+	provider = AppConfig.load_from_env().providers['anyrouter']
+	account_cookies = {
+		'session': 'test-only',
+		'acw_tc': 'old-acw',
+		'cdn_sec_tc': 'old-cdn',
+		'acw_sc__v2': 'old-v2',
+		'theme': 'dark',
+	}
+	monkeypatch.setattr(
+		checkin,
+		'get_waf_cookies_with_browser',
+		AsyncMock(return_value={'acw_tc': 'fresh-acw', 'acw_sc__v2': 'fresh-v2'}),
+	)
+
+	cookies = await checkin.prepare_cookies('测试账号', provider, account_cookies)
+
+	assert cookies == {'session': 'test-only', 'theme': 'dark', 'acw_tc': 'fresh-acw', 'acw_sc__v2': 'fresh-v2'}
+	assert account_cookies['cdn_sec_tc'] == 'old-cdn'
 
 
 @pytest.mark.asyncio
