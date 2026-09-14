@@ -403,17 +403,9 @@ async def check_in_with_browser(account: AccountConfig, account_name: str, provi
 		context = await launch_login_context(settings, use_proxy=provider_config.use_proxy)
 		page = await context.new_page()
 		await prepare_browser_page(page)
-		await page.goto(
-			f'{provider_config.domain}{provider_config.login_path}',
-			wait_until='domcontentloaded',
-			timeout=settings.wait_timeout_ms,
-		)
-		await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
-		if account.provider == 'agentrouter' and await complete_visible_slider(page, account_name):
-			await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
-
 		domain = urlparse(provider_config.domain).hostname
 		waf_cookie_names = set(provider_config.waf_cookie_names or [])
+		# 第一次访问就使用账号会话，避免通过验证后才改变其 Cookie 环境。
 		await context.add_cookies(
 			[
 				{
@@ -430,13 +422,24 @@ async def check_in_with_browser(account: AccountConfig, account_name: str, provi
 			]
 		)
 
-		if provider_config.name == 'anyrouter':
+		await page.goto(
+			f'{provider_config.domain}{provider_config.login_path}',
+			wait_until='domcontentloaded',
+			timeout=settings.wait_timeout_ms,
+		)
+		await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
+		if account.provider == 'agentrouter' and await complete_visible_slider(page, account_name):
+			await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
+
+		if provider_config.name in {'anyrouter', 'agentrouter'}:
 			await page.goto(
 				f'{provider_config.domain}/console/token',
 				wait_until='domcontentloaded',
 				timeout=settings.wait_timeout_ms,
 			)
 			await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
+			if account.provider == 'agentrouter' and await complete_visible_slider(page, account_name):
+				await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
 
 		user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
 		before_response = await browser_fetch_json(page, user_info_url, 'GET', provider_config.api_user_key, api_user)

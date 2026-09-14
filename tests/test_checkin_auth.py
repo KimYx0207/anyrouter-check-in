@@ -136,6 +136,11 @@ async def test_expired_cookie_stops_before_checkin_and_closes_browser(monkeypatc
 		add_cookies=AsyncMock(),
 		close=AsyncMock(),
 	)
+
+	async def require_session_before_navigation(*args, **kwargs):
+		context.add_cookies.assert_awaited_once()
+
+	page.goto.side_effect = require_session_before_navigation
 	launch = AsyncMock(return_value=context)
 	fetch = AsyncMock(return_value={'status': 401, 'contentType': 'application/json', 'text': '{"success":false}'})
 	monkeypatch.setattr(checkin, 'launch_login_context', launch)
