@@ -21,6 +21,8 @@ jobs:
     env:
       PYTHONIOENCODING: utf-8
       PYTHONUNBUFFERED: 1
+      # Keep short-lived CI processes free of background binary updates.
+      CLOAKBROWSER_AUTO_UPDATE: "false"
       DEBUG_MODE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.debug == 'true' && 'true' || 'false' }}
     steps:
     - uses: actions/checkout@v6
@@ -58,9 +60,7 @@ jobs:
       id: cloakbrowser-cache
       with:
         path: ~/.cloakbrowser
-        key: ${{ runner.os }}-cloakbrowser-v1
-        restore-keys: |
-          ${{ runner.os }}-cloakbrowser-
+        key: ${{ runner.os }}-cloakbrowser-${{ hashFiles('uv.lock') }}
 
     - name: 安装 CloakBrowser
       run: |
