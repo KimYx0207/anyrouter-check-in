@@ -105,8 +105,10 @@ def fetch_node(session: dict, *, transport: httpx.BaseTransport | None = None) -
 	try:
 		with httpx.Client(trust_env=False, follow_redirects=False, timeout=45, transport=transport) as client:
 			response = client.post(session['api_base'].rstrip('/') + '/Desktop/linkBegin', headers=headers, json=body)
-	except httpx.HTTPError:
-		raise ProxySetupError('Direct Veee node request failed at the network layer') from None
+	except httpx.HTTPError as error:
+		raise ProxySetupError(
+			f'Direct Veee node request failed at the network layer ({type(error).__name__})'
+		) from None
 	if response.status_code != 200:
 		raise ProxySetupError(f'Veee node request returned HTTP {response.status_code}')
 	payload = decode_service_response(response.text, session['response_alphabet'])
@@ -174,9 +176,11 @@ def main() -> int:
 	parser.add_argument('--proof', type=Path)
 	parser.add_argument('--port', type=int, default=7890)
 	args = parser.parse_args()
+	request_attempted = False
 	try:
 		session = load_session(os.getenv('VEEE_SESSION_CONFIG', ''))
 		requested_at = datetime.now(timezone.utc).isoformat()
+		request_attempted = True
 		node = fetch_node(session)
 		write_private_json(args.output, build_config(node, args.port))
 		proof = {
@@ -191,6 +195,20 @@ def main() -> int:
 		print(json.dumps(proof), flush=True)
 		return 0
 	except ProxySetupError as error:
+		if args.proof:
+			try:
+				write_private_json(
+					args.proof,
+					{
+						'failedAtUtc': datetime.now(timezone.utc).isoformat(),
+						'nodeRequestAttempted': request_attempted,
+						'freshNodeRequested': False,
+						'nodeRefreshSucceeded': False,
+						'error': str(error),
+					},
+				)
+			except OSError:
+				print('[FAILED] Could not save the sanitized proxy failure proof', flush=True)
 		print(f'[FAILED] {error}', flush=True)
 		return 1
 	except OSError:

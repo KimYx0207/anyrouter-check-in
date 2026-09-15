@@ -87,6 +87,7 @@ jobs:
           browser-profiles-${{ runner.os }}-${{ github.ref_name }}-
 
     - name: 配置代理
+      id: proxy_setup
       env:
         VEEE_SESSION_CONFIG: ${{ secrets.VEEE_SESSION_CONFIG }}
         PROXY_SUBSCRIPTION_URL: ${{ secrets.PROXY_SUBSCRIPTION_URL }}
@@ -95,6 +96,30 @@ jobs:
         MIHOMO_VERSION: v1.19.27
         PROXY_REQUIRED: ${{ secrets.VEEE_SESSION_CONFIG != '' && 'true' || 'false' }}
       run: bash scripts/setup_mihomo_proxy.sh
+
+    - name: 诊断 Veee 直连端点
+      if: failure() && steps.proxy_setup.outcome == 'failure'
+      run: |
+        uv run python - <<'PY'
+        import json
+        import socket
+        import httpx
+
+        host = "cdn.kisslucky.com"
+        try:
+            addresses = sorted({entry[4][0] for entry in socket.getaddrinfo(host, 9527, type=socket.SOCK_STREAM)})
+            print(json.dumps({"probe": "public_dns", "host": host, "addresses": addresses}), flush=True)
+        except OSError as error:
+            print(json.dumps({"probe": "public_dns", "errorType": type(error).__name__}), flush=True)
+        with httpx.Client(trust_env=False, follow_redirects=False, timeout=12) as client:
+            for origin in (f"https://{host}:9527", f"https://{host}"):
+                try:
+                    response = client.get(origin + "/Desktop/linkBegin")
+                    result = {"probe": "unauthenticated_endpoint", "origin": origin, "http": response.status_code}
+                except httpx.HTTPError as error:
+                    result = {"probe": "unauthenticated_endpoint", "origin": origin, "errorType": type(error).__name__}
+                print(json.dumps(result), flush=True)
+        PY
 
     - name: 保存节点刷新回执
       if: always()

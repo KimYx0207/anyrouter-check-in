@@ -2,12 +2,20 @@
 
 import base64
 import json
+import sys
 from uuid import uuid4
 
 import httpx
 import pytest
 
-from scripts.refresh_veee_proxy import ProxySetupError, build_config, decode_service_response, fetch_node, load_session
+from scripts.refresh_veee_proxy import (
+	ProxySetupError,
+	build_config,
+	decode_service_response,
+	fetch_node,
+	load_session,
+	main,
+)
 
 
 @pytest.fixture
@@ -120,3 +128,35 @@ def test_invalid_node_credentials_are_not_printed():
 	with pytest.raises(ProxySetupError) as error:
 		build_config({'password': 'bad-sensitive-value'}, 7890)
 	assert 'bad-sensitive-value' not in str(error.value)
+
+
+@pytest.mark.parametrize('error_type', [httpx.ConnectTimeout, httpx.ConnectError, httpx.ReadTimeout])
+def test_network_failure_reports_type_without_sensitive_detail(session, error_type):
+	def handle(request):
+		raise error_type(session['auth_token'], request=request)
+
+	with pytest.raises(ProxySetupError) as error:
+		fetch_node(session, transport=httpx.MockTransport(handle))
+	assert error_type.__name__ in str(error.value)
+	assert session['auth_token'] not in str(error.value)
+
+
+def test_failed_refresh_writes_sanitized_proof_without_proxy_config(session, monkeypatch, tmp_path):
+	output = tmp_path / 'config.json'
+	proof = tmp_path / 'proof.json'
+	monkeypatch.setenv('VEEE_SESSION_CONFIG', json.dumps(session))
+	monkeypatch.setattr(sys, 'argv', ['refresh_veee_proxy.py', '--output', str(output), '--proof', str(proof)])
+
+	def fail_refresh(_session):
+		raise ProxySetupError('Direct Veee node request failed at the network layer (ConnectTimeout)')
+
+	monkeypatch.setattr('scripts.refresh_veee_proxy.fetch_node', fail_refresh)
+	assert main() == 1
+	assert not output.exists()
+	data = json.loads(proof.read_text())
+	assert data['nodeRequestAttempted'] is True
+	assert data['nodeRefreshSucceeded'] is False
+	assert data['freshNodeRequested'] is False
+	assert 'ConnectTimeout' in data['error']
+	assert session['auth_token'] not in proof.read_text()
+	assert session['device_id'] not in proof.read_text()
