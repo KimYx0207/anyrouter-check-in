@@ -30,7 +30,7 @@ def profile(quota=100, used=20, user_id=123):
 	return {'id': user_id, 'quota': quota * 500000, 'used_quota': used * 500000}
 
 
-def fake_browser(monkeypatch, *, after=None, callback_success=True):
+def fake_browser(monkeypatch, *, after=None, callback_success=True, github_path=None, delayed_button=False):
 	listeners = {}
 	page = SimpleNamespace(
 		url='https://agentrouter.org/login',
@@ -45,17 +45,30 @@ def fake_browser(monkeypatch, *, after=None, callback_success=True):
 		remove_listener=MagicMock(),
 	)
 
+	async def complete_callback(**kwargs):
+		page.url = 'https://agentrouter.org/console'
+		await listeners['response'](
+			SimpleNamespace(
+				url='https://agentrouter.org/api/oauth/github?code=fake-code',
+				status=200,
+				json=AsyncMock(return_value={'success': callback_success}),
+			)
+		)
+
+	button = SimpleNamespace(
+		is_visible=AsyncMock(side_effect=[False, True] if delayed_button else None, return_value=True),
+		is_enabled=AsyncMock(return_value=True),
+		click=AsyncMock(side_effect=complete_callback),
+	)
+	page.locator = MagicMock(return_value=SimpleNamespace(first=button))
+
 	async def navigate(url, **kwargs):
 		page.url = url
 		if url.startswith('https://github.com/login/oauth/authorize?'):
-			page.url = 'https://agentrouter.org/console'
-			await listeners['response'](
-				SimpleNamespace(
-					url='https://agentrouter.org/api/oauth/github?code=fake-code',
-					status=200,
-					json=AsyncMock(return_value={'success': callback_success}),
-				)
-			)
+			if github_path:
+				page.url = 'https://github.com' + github_path
+			else:
+				await complete_callback()
 
 	page.goto = AsyncMock(side_effect=navigate)
 	context = SimpleNamespace(new_page=AsyncMock(return_value=page), add_cookies=AsyncMock(), close=AsyncMock())
@@ -111,6 +124,26 @@ async def test_oauth_requires_callback_and_matching_identity_and_closes_private_
 	assert {cookie['name'] for cookie in context.add_cookies.await_args.args[0]} == {'user_session'}
 	context.close.assert_awaited_once()
 	page.remove_listener.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['/login/oauth/authorize', '/login/oauth/select_account'])
+async def test_oauth_waits_for_authorization_and_selects_only_current_account(monkeypatch, path):
+	page, context, _ = fake_browser(monkeypatch, github_path=path, delayed_button=True)
+	assert await github_oauth.login_agentrouter_with_github(account(), 'Test', provider()) == profile()
+	page.locator.return_value.first.click.assert_awaited_once()
+	if path.endswith('select_account'):
+		assert 'authorize_app' in page.locator.call_args.args[0]
+	context.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_expired_github_session_reports_login_required_without_clicking(monkeypatch):
+	page, context, _ = fake_browser(monkeypatch, github_path='/login')
+	with pytest.raises(github_oauth.GithubOAuthError, match='login-required'):
+		await github_oauth.login_agentrouter_with_github(account(), 'Test', provider())
+	page.locator.return_value.first.click.assert_not_awaited()
+	context.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio

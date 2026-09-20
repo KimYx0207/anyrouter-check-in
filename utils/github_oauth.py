@@ -109,17 +109,36 @@ async def login_agentrouter_with_github(account, account_name: str, provider) ->
 			stage = 'github-navigation'
 			await page.goto(authorize_url, wait_until='domcontentloaded', timeout=settings.wait_timeout_ms)
 			stage = 'github-authorization'
-			location = urlsplit(page.url)
-			if location.netloc == 'github.com':
-				if location.path != '/login/oauth/authorize':
-					raise GithubOAuthError('GitHub 会话已失效或需要人工验证，请更新该账号的 github_cookies')
-				button = page.locator('button[name="authorize"]').first
-				if await button.is_visible():
-					await button.click(timeout=10000)
-			elif location.scheme != 'https' or location.netloc != 'agentrouter.org':
-				raise GithubOAuthError('GitHub OAuth 跳转到非预期站点')
-			stage = 'provider-callback'
-			await asyncio.wait_for(callback_done.wait(), timeout=min(settings.wait_timeout_ms / 1000, 60))
+			deadline = asyncio.get_running_loop().time() + min(settings.wait_timeout_ms / 1000, 60)
+			submitted = set()
+			while not callback_done.is_set():
+				location = urlsplit(page.url)
+				if location.scheme != 'https' or location.netloc not in {'github.com', 'agentrouter.org'}:
+					raise GithubOAuthError('GitHub OAuth 跳转到非预期站点')
+				if location.netloc == 'github.com':
+					selectors = {
+						'/login/oauth/authorize': 'button[name="authorize"]',
+						'/login/oauth/select_account': 'form[action^="/login/oauth/authorize_app"] button[type="submit"]',
+					}
+					selector = selectors.get(location.path)
+					if selector is None:
+						reason = 'login-required' if location.path == '/login' else 'verification-required'
+						raise GithubOAuthError(
+							f'GitHub 会话需要重新登录或人工验证（{reason}），请更新该账号的 github_cookies'
+						)
+					button = page.locator(selector).first
+					if location.path not in submitted and await button.is_visible() and await button.is_enabled():
+						await button.click(timeout=10000)
+						submitted.add(location.path)
+				stage = 'provider-callback'
+				remaining = deadline - asyncio.get_running_loop().time()
+				if remaining <= 0:
+					raise TimeoutError
+				try:
+					await asyncio.wait_for(callback_done.wait(), timeout=min(0.5, remaining))
+					break
+				except TimeoutError:
+					pass
 			if not callback_ok:
 				raise GithubOAuthError('AgentRouter GitHub OAuth 回调未成功')
 			# Some OAuth frontends stay on their callback route instead of navigating themselves.
