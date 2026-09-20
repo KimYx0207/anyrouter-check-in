@@ -153,6 +153,22 @@ async def test_expired_github_session_reports_login_required_without_clicking(mo
 
 
 @pytest.mark.asyncio
+async def test_consent_selects_allow_when_cancel_has_the_same_button_name(monkeypatch):
+	page, _, _ = fake_browser(monkeypatch, github_path='/login/oauth/authorize')
+	allow = page.locator.return_value.first
+	cancel = SimpleNamespace(
+		is_visible=AsyncMock(return_value=True),
+		is_enabled=AsyncMock(return_value=True),
+		click=AsyncMock(side_effect=RuntimeError('Cancel would deny OAuth')),
+	)
+	# GitHub renders Cancel (value=0) before Authorize (value=1), both named authorize.
+	page.locator.side_effect = lambda selector: SimpleNamespace(first=allow if '[value="1"]' in selector else cancel)
+	assert await github_oauth.login_agentrouter_with_github(account(), 'Test', provider()) == profile()
+	allow.click.assert_awaited_once()
+	cancel.click.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('options', [{'after': profile(user_id=456)}, {'callback_success': False}])
 async def test_wrong_account_or_rejected_callback_fails(monkeypatch, options):
 	_, context, _ = fake_browser(monkeypatch, **options)

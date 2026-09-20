@@ -121,7 +121,7 @@ async def login_agentrouter_with_github(account, account_name: str, provider) ->
 					raise GithubOAuthError('GitHub OAuth 跳转到非预期站点')
 				if location.netloc == 'github.com':
 					selectors = {
-						'/login/oauth/authorize': 'button[name="authorize"]',
+						'/login/oauth/authorize': 'button[name="authorize"][value="1"]',
 						'/login/oauth/select_account': 'form[action^="/login/oauth/authorize_app"] button[type="submit"]',
 					}
 					selector = selectors.get(location.path)
@@ -187,7 +187,7 @@ async def login_agentrouter_with_github(account, account_name: str, provider) ->
 		button_state = 'unknown'
 		if page is not None and host == 'github.com' and path == '/login/oauth/authorize':
 			try:
-				button = page.locator('button[name="authorize"]').first
+				button = page.locator('button[name="authorize"][value="1"]').first
 				button_state = 'visible' if await button.is_visible() else 'absent'
 			except Exception:
 				pass
