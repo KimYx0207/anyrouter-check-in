@@ -8,7 +8,9 @@
 
 import asyncio
 import json
+import math
 import os
+import re
 import sys
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -33,6 +35,7 @@ from utils.browser import (
 	wait_for_waf_ready,
 )
 from utils.config import AccountConfig, AppConfig, load_accounts_config
+from utils.constants import SIGNIN_COOLDOWN_HOURS
 from utils.debug import debug_print, is_debug_enabled
 from utils.github_oauth import GithubOAuthError, login_agentrouter_with_github
 from utils.notify import notify
@@ -497,6 +500,47 @@ def execute_check_in(client, account_name: str, provider_config, headers: dict):
 		return CheckInAttempt(False, error)
 
 
+def get_recent_agentrouter_reward(client, provider, api_user, *, now=None):
+	"""Recover a lost local record only from the authenticated site's explicit reward log."""
+	now = now or datetime.now()
+	try:
+		response = client.get(
+			provider.domain.rstrip('/') + '/api/log/self',
+			headers={provider.api_user_key: api_user},
+			params={
+				'type': 4,
+				'p': 0,
+				'page_size': 100,
+				'start_timestamp': int(now.timestamp() - SIGNIN_COOLDOWN_HOURS * 3600),
+				'end_timestamp': int(now.timestamp()),
+			},
+		)
+		if response.status_code != 200:
+			return None
+		payload = response.json()
+		if not isinstance(payload, dict) or payload.get('success') is not True:
+			return None
+		data = payload.get('data')
+		if not isinstance(data, dict) or not isinstance(data.get('items'), list):
+			return None
+		rewards = []
+		for item in data['items']:
+			if not isinstance(item, dict) or item.get('type') != 4:
+				continue
+			timestamp = item.get('created_at')
+			if type(timestamp) is not int or not 0 <= now.timestamp() - timestamp < SIGNIN_COOLDOWN_HOURS * 3600:
+				continue
+			content = item.get('content')
+			if not isinstance(content, str):
+				continue
+			match = re.fullmatch(r'每日签到成功[，,]\s*增加额度\s*[＄$](\d+(?:\.\d+)?)\s*额度', content)
+			if match and math.isfinite(float(match[1])) and float(match[1]) > 0:
+				rewards.append(timestamp)
+		return datetime.fromtimestamp(max(rewards)) if rewards else None
+	except (httpx.HTTPError, ValueError, TypeError, OverflowError):
+		return None
+
+
 async def check_in_agentrouter(account, account_name, account_key, provider, last_signin_time):
 	"""A user-info request proves authentication; only a verified credit proves a reward."""
 	before = None
@@ -509,10 +553,23 @@ async def check_in_agentrouter(account, account_name, account_key, provider, las
 			before = get_user_info(
 				client, {provider.api_user_key: account.api_user}, provider.domain.rstrip('/') + provider.user_info_path
 			)
-		if not before.get('success'):
-			raise GithubOAuthError(before.get('error', '无法获取登录前额度'))
-		if before.get('api_user') != str(account.api_user):
-			raise GithubOAuthError('签到前平台账号与配置不匹配')
+			if not before.get('success'):
+				raise GithubOAuthError(before.get('error', '无法获取登录前额度'))
+			if before.get('api_user') != str(account.api_user):
+				raise GithubOAuthError('签到前平台账号与配置不匹配')
+			recent_reward = get_recent_agentrouter_reward(client, provider, account.api_user)
+			if recent_reward is not None:
+				print(f'[验证] {account_name}: 服务端签到奖励日志已确认，恢复原始冷却时间')
+				return SigninResult(
+					account_key=account_key,
+					account_name=account_name,
+					status=SigninStatus.SKIPPED,
+					balance_before=before['quota'],
+					balance_after=before['quota'],
+					user_info=UserBalance(before['quota'], before['used_quota']),
+					last_signin=recent_reward,
+					new_record=SigninRecord(recent_reward, before['quota'], reward_verified=True),
+				)
 		print(f'[签到前] {before["display"]}')
 		profile = await login_agentrouter_with_github(account, account_name, provider)
 		after = parse_user_info_payload({'success': True, 'data': profile})

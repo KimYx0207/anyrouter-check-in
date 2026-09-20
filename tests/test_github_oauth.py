@@ -1,7 +1,7 @@
 """OAuth identity, credential isolation and reward regressions using fake sessions only."""
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -130,7 +130,45 @@ async def test_browser_exception_does_not_expose_oauth_codes_or_cookies(monkeypa
 		await github_oauth.login_agentrouter_with_github(account(), 'Test', provider())
 	assert 'secret-code' not in str(error.value)
 	assert 'fake-github' not in str(error.value)
+	assert 'stage=provider-login' in str(error.value)
 	context.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+	'changes',
+	[
+		{'type': 2},
+		{'created_at': 0},
+		{'created_at': 2000000000},
+		{'created_at': True},
+		{'content': '登录成功'},
+		{'content': '每日签到成功，增加额度 ＄0.000000 额度'},
+		{'content': '每日签到成功，增加额度 ＄25.000000 额度 extra'},
+	],
+)
+def test_only_recent_explicit_positive_server_rewards_restore_history(changes):
+	now = datetime.fromtimestamp(1900000000)
+	item = {'type': 4, 'created_at': 1899999940, 'content': '每日签到成功，增加额度 ＄25.000000 额度'}
+	client = MagicMock()
+	client.get.return_value.status_code = 200
+	client.get.return_value.json.return_value = {'success': True, 'data': {'items': [item]}}
+	assert checkin.get_recent_agentrouter_reward(client, provider(), '123', now=now) == now - timedelta(seconds=60)
+	item.update(changes)
+	assert checkin.get_recent_agentrouter_reward(client, provider(), '123', now=now) is None
+
+
+@pytest.mark.asyncio
+async def test_server_reward_recovers_original_cooldown_without_repeating_oauth(monkeypatch):
+	login = setup_reward_check(monkeypatch, profile())
+	reward_time = datetime.now() - timedelta(hours=2)
+	monkeypatch.setattr(checkin, 'get_recent_agentrouter_reward', lambda *args: reward_time)
+	result = await checkin.check_in_account(account(), 0, AppConfig({'agentrouter': provider()}), {})
+	assert result.status is SigninStatus.SKIPPED
+	assert result.balance_diff is None
+	assert result.new_record.time == reward_time
+	assert result.new_record.reward_verified is True
+	assert update_signin_history({}, [result])[result.account_key].time == reward_time
+	login.assert_not_awaited()
 
 
 def setup_reward_check(monkeypatch, after):

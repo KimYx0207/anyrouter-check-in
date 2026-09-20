@@ -61,12 +61,16 @@ async def login_agentrouter_with_github(account, account_name: str, provider) ->
 		raise GithubOAuthError('GitHub OAuth 缺少预期平台账号 api_user')
 	settings = load_browser_login_settings(account_name, account.provider, persist_profile=False)
 	context = None
+	stage = 'browser'
+	page = None
 	try:
 		context = await launch_login_context(settings, use_proxy=provider.use_proxy)
 		await context.add_cookies(cookies)
 		page = await context.new_page()
+		stage = 'provider-login'
 		await page.goto(origin + '/login', wait_until='domcontentloaded', timeout=settings.wait_timeout_ms)
 		await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
+		stage = 'oauth-state'
 		params = await page.evaluate("""async () => {
 			const status = await (await fetch('/api/status')).json();
 			const state = await (await fetch('/api/oauth/state', {cache: 'no-store'})).json();
@@ -102,7 +106,9 @@ async def login_agentrouter_with_github(account, account_name: str, provider) ->
 					'scope': 'user:email',
 				}
 			)
+			stage = 'github-navigation'
 			await page.goto(authorize_url, wait_until='domcontentloaded', timeout=settings.wait_timeout_ms)
+			stage = 'github-authorization'
 			location = urlsplit(page.url)
 			if location.netloc == 'github.com':
 				if location.path != '/login/oauth/authorize':
@@ -112,10 +118,12 @@ async def login_agentrouter_with_github(account, account_name: str, provider) ->
 					await button.click(timeout=10000)
 			elif location.scheme != 'https' or location.netloc != 'agentrouter.org':
 				raise GithubOAuthError('GitHub OAuth 跳转到非预期站点')
+			stage = 'provider-callback'
 			await asyncio.wait_for(callback_done.wait(), timeout=min(settings.wait_timeout_ms / 1000, 60))
 			if not callback_ok:
 				raise GithubOAuthError('AgentRouter GitHub OAuth 回调未成功')
 			# Some OAuth frontends stay on their callback route instead of navigating themselves.
+			stage = 'provider-verification'
 			await page.goto(origin + '/console', wait_until='domcontentloaded', timeout=settings.wait_timeout_ms)
 			payload = await page.evaluate(
 				"""async ({header, user}) => {
@@ -149,7 +157,21 @@ async def login_agentrouter_with_github(account, account_name: str, provider) ->
 		raise
 	except Exception as error:
 		# Browser exceptions often contain callback URLs, OAuth codes or response bodies.
-		raise GithubOAuthError(f'GitHub OAuth 未完成（{type(error).__name__}），请检查会话有效性和站点验证') from None
+		location = urlsplit(page.url) if page is not None else None
+		known_paths = {'/login', '/login/oauth/authorize', '/login/oauth/select_account', '/oauth/github', '/console'}
+		path = location.path if location and location.path in known_paths else 'other'
+		host = location.hostname if location and location.hostname in {'github.com', 'agentrouter.org'} else 'other'
+		button_state = 'unknown'
+		if page is not None and host == 'github.com' and path == '/login/oauth/authorize':
+			try:
+				button = page.locator('button[name="authorize"]').first
+				button_state = 'visible' if await button.is_visible() else 'absent'
+			except Exception:
+				pass
+		raise GithubOAuthError(
+			f'GitHub OAuth 未完成（{type(error).__name__}; stage={stage}; page={host}{path}; authorize={button_state}），'
+			'请检查会话有效性和站点验证'
+		) from None
 	finally:
 		if context is not None:
 			await context.close()
