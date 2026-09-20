@@ -8,9 +8,10 @@
 
 import asyncio
 import json
+import os
 import sys
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -33,12 +34,14 @@ from utils.browser import (
 )
 from utils.config import AccountConfig, AppConfig, load_accounts_config
 from utils.debug import debug_print, is_debug_enabled
+from utils.github_oauth import GithubOAuthError, login_agentrouter_with_github
 from utils.notify import notify
 from utils.proxy import get_playwright_proxy, get_proxy_server
 from utils.result import (
 	SigninRecord,
 	SigninResult,
 	SigninStatus,
+	UserBalance,
 	analyze_balance_change,
 	format_notification_line,
 	generate_balance_hash,
@@ -256,8 +259,10 @@ def parse_user_info_payload(data: dict, status_code: int = 200):
 		used_quota = round(user_data.get('used_quota', 0) / 500000, 2)
 		return {
 			'success': True,
+			'api_user': str(user_data.get('id', '')),
 			'quota': quota,
 			'used_quota': used_quota,
+			'total_quota': (user_data.get('quota', 0) + user_data.get('used_quota', 0)) / 500000,
 			'display': f'当前余额: ${quota}, 已用: ${used_quota}',
 		}
 	return {
@@ -394,14 +399,6 @@ async def check_in_with_browser(account: AccountConfig, account_name: str, provi
 			]
 		)
 
-		if provider_config.name == 'anyrouter':
-			await page.goto(
-				f'{provider_config.domain}/console/token',
-				wait_until='domcontentloaded',
-				timeout=settings.wait_timeout_ms,
-			)
-			await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
-
 		user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
 		before_response = await browser_fetch_json(page, user_info_url, 'GET', provider_config.api_user_key, api_user)
 		user_info_before = parse_browser_user_info_response(before_response)
@@ -413,6 +410,14 @@ async def check_in_with_browser(account: AccountConfig, account_name: str, provi
 				await save_login_screenshot(page, account.provider, account_name, 'user-info-failed')
 			return CheckInAttempt(False, error), user_info_before, None
 		print(f'[签到前] {user_info_before["display"]}')
+		# The console itself can trigger AnyRouter's daily credit. Capture the balance first.
+		if provider_config.name == 'anyrouter':
+			await page.goto(
+				f'{provider_config.domain}/console/token',
+				wait_until='domcontentloaded',
+				timeout=settings.wait_timeout_ms,
+			)
+			await wait_for_waf_ready(page, timeout_ms=settings.wait_timeout_ms)
 
 		if provider_config.needs_manual_check_in():
 			print(f'[网络] {account_name}: 在浏览器上下文执行签到请求')
@@ -492,6 +497,52 @@ def execute_check_in(client, account_name: str, provider_config, headers: dict):
 		return CheckInAttempt(False, error)
 
 
+async def check_in_agentrouter(account, account_name, account_key, provider, last_signin_time):
+	"""A user-info request proves authentication; only a verified credit proves a reward."""
+	before = None
+	after = None
+	reward = None
+	error = None
+	try:
+		with httpx.Client(timeout=30, proxy=get_proxy_server(use_proxy=provider.use_proxy), trust_env=False) as client:
+			client.cookies.update(parse_cookies(account.cookies))
+			before = get_user_info(
+				client, {provider.api_user_key: account.api_user}, provider.domain.rstrip('/') + provider.user_info_path
+			)
+		if not before.get('success'):
+			raise GithubOAuthError(before.get('error', '无法获取登录前额度'))
+		if before.get('api_user') != str(account.api_user):
+			raise GithubOAuthError('签到前平台账号与配置不匹配')
+		print(f'[签到前] {before["display"]}')
+		profile = await login_agentrouter_with_github(account, account_name, provider)
+		after = parse_user_info_payload({'success': True, 'data': profile})
+		print(f'[验证] {account_name}: GitHub OAuth 完成，平台账号匹配')
+		print(f'[签到后] {after["display"]}')
+		reward = round(after['total_quota'] - before['total_quota'], 2)
+		if reward <= 0:
+			raise GithubOAuthError('GitHub OAuth 已完成，但未观察到新增奖励；未记录成功或开启冷却')
+		print(f'[成功] {account_name}: 已验证新增奖励 ${reward}')
+	except GithubOAuthError as exc:
+		error = str(exc)
+	except Exception as exc:
+		error = f'AgentRouter 签到验证失败（{type(exc).__name__}）'
+	if error:
+		print(f'[失败] {account_name}: {error}')
+	verified = error is None and reward is not None and reward > 0
+	return SigninResult(
+		account_key=account_key,
+		account_name=account_name,
+		status=SigninStatus.SUCCESS if verified else SigninStatus.FAILED,
+		balance_before=before.get('quota') if before else None,
+		balance_after=after.get('quota') if after else None,
+		balance_diff=reward,
+		user_info=UserBalance(after['quota'], after['used_quota']) if after else None,
+		error=error,
+		last_signin=last_signin_time,
+		new_record=SigninRecord(datetime.now(), after['quota'], reward_verified=True) if verified else None,
+	)
+
+
 async def check_in_account(
 	account: AccountConfig, account_index: int, app_config: AppConfig, signin_history: dict[str, SigninRecord]
 ) -> SigninResult:
@@ -547,7 +598,9 @@ async def check_in_account(
 	last_balance = last_record.balance if last_record else None
 
 	# 检查冷却期
-	if is_in_cooldown(last_signin_time):
+	# Old AgentRouter history recorded ordinary authenticated reads as successful check-ins.
+	trusted_history = account.provider != 'agentrouter' or (last_record and last_record.reward_verified)
+	if trusted_history and is_in_cooldown(last_signin_time):
 		from utils.result import format_time_remaining, get_next_signin_time
 
 		next_time = get_next_signin_time(last_signin_time)
@@ -561,6 +614,13 @@ async def check_in_account(
 			balance_after=last_balance,
 			last_signin=last_signin_time,
 		)
+
+	if (
+		account.provider == 'agentrouter'
+		and not provider_config.needs_manual_check_in()
+		and not account.has_login_credentials()
+	):
+		return await check_in_agentrouter(account, account_name, account_key, provider_config, last_signin_time)
 
 	user_cookies = parse_cookies(account.cookies)
 	if not user_cookies:
@@ -726,6 +786,34 @@ async def check_in_account(
 		client.close()
 
 
+def write_checkin_proof(results: list[SigninResult]) -> None:
+	"""Save a small receipt with no account IDs, cookies, profiles or server response bodies."""
+	path = os.getenv('CHECKIN_PROOF_PATH')
+	if not path:
+		return
+	proof = {
+		'completedAtUtc': datetime.now(timezone.utc).isoformat(),
+		'accounts': [
+			{
+				'slot': index + 1,
+				'provider': result.account_key.split('_', 1)[0],
+				'status': result.status.value,
+				'balanceBefore': result.balance_before,
+				'balanceAfter': result.balance_after,
+				'usedQuotaAfter': result.user_info.used_quota if result.user_info else None,
+				'balanceDiff': result.balance_diff,
+				'rewardVerified': bool(
+					result.status is SigninStatus.SUCCESS and result.balance_diff and result.balance_diff > 0
+				),
+			}
+			for index, result in enumerate(results)
+		],
+	}
+	output = Path(path)
+	output.parent.mkdir(parents=True, exist_ok=True)
+	output.write_text(json.dumps(proof, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+
 async def main():
 	"""主函数"""
 	print('[系统] 公益站多账号自动签到脚本启动')
@@ -774,6 +862,7 @@ async def main():
 	total_count = len(results)
 
 	print(f'\n[统计] 签到完成: 成功 {success_count}, 失败 {failed_count}, 冷却 {cooldown_count}, 总计 {total_count}')
+	write_checkin_proof(results)
 
 	# 更新签到历史
 	new_history = update_signin_history(signin_history, results)

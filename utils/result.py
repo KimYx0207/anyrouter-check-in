@@ -95,12 +95,15 @@ class SigninRecord:
 
 	time: datetime
 	balance: float | None = None
+	reward_verified: bool = False
 
 	def to_dict(self) -> dict:
 		"""转换为字典（用于 JSON 序列化）"""
 		result = {'time': self.time.isoformat()}
 		if self.balance is not None:
 			result['balance'] = self.balance
+		if self.reward_verified:
+			result['reward_verified'] = True
 		return result
 
 	@classmethod
@@ -114,7 +117,8 @@ class SigninRecord:
 				# 新格式：包含时间和余额
 				return cls(
 					time=datetime.fromisoformat(data['time']),
-					balance=data.get('balance')
+					balance=data.get('balance'),
+					reward_verified=data.get('reward_verified') is True,
 				)
 		except Exception:
 			pass
@@ -479,7 +483,8 @@ def load_signin_history_from_db() -> dict[str, SigninRecord] | None:
 					balance = db.get_last_known_balance(account.id)
 				history[account_key] = SigninRecord(
 					time=last_signin.signin_time,
-					balance=balance
+					balance=balance,
+					reward_verified=last_signin.status == 'success' and (last_signin.balance_diff or 0) > 0,
 				)
 
 		return history if history else None

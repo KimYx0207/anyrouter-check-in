@@ -136,6 +136,7 @@ jobs:
         CHECKIN_HEADLESS: false
         CHECKIN_HUMANIZE: true
         CHECKIN_WAIT_TIMEOUT_MS: 120000
+        CHECKIN_PROOF_PATH: ${{ runner.temp }}/checkin-proof.json
         ANYROUTER_ACCOUNTS: ${{ secrets.ANYROUTER_ACCOUNTS }}
         PROVIDERS: ${{ secrets.PROVIDERS }}
         DINGDING_WEBHOOK: ${{ secrets.DINGDING_WEBHOOK }}
@@ -157,6 +158,15 @@ jobs:
         BARK_SERVER: ${{ secrets.BARK_SERVER }}
       run: |
         xvfb-run -a --server-args="-screen 0 1920x1080x24" uv run checkin.py
+
+    - name: 保存签到验收回执
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: checkin-proof-${{ github.run_id }}
+        path: ${{ runner.temp }}/checkin-proof.json
+        if-no-files-found: ignore
+        retention-days: 14
 
     - name: 上传调试截图
       if: always() && env.DEBUG_MODE == 'true'

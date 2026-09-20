@@ -5,7 +5,7 @@
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Literal
 
 
@@ -182,6 +182,7 @@ class AccountConfig:
 	name: str | None = None
 	email: str | None = None
 	password: str | None = None
+	github_cookies: dict[str, str] | None = field(default=None, repr=False)
 
 	@classmethod
 	def from_dict(cls, data: dict, index: int) -> 'AccountConfig':
@@ -196,6 +197,7 @@ class AccountConfig:
 			name=name if name else None,
 			email=data.get('email'),
 			password=data.get('password'),
+			github_cookies=data.get('github_cookies'),
 		)
 
 	def has_login_credentials(self) -> bool:

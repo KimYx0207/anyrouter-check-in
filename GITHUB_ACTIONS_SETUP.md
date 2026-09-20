@@ -25,6 +25,29 @@
 
 如果已在站点绑定独立的邮箱密码，也可以配置 `email` + `password`，由浏览器登录后取得 session；仅有 GitHub 登录的账号继续使用 Cookie 方式。
 
+### AgentRouter 的 GitHub 登录账号
+
+AgentRouter 查询 `/api/user/self` 成功只证明会话有效，不能作为每日奖励到账证明。对于 GitHub 登录账号，脚本先读取平台额度，再通过 GitHub OAuth 重新登录，并核验返回的平台账号 ID。只有“剩余额度 + 已用额度”增加时才记录奖励并开启 24 小时冷却；未观察到奖励则明确失败，不写入新的成功历史。旧版本由普通查询产生的冷却记录不再用于跳过该平台。
+
+在对应的 `ANYROUTER_ACCOUNTS` 项中添加 `github_cookies`，保留原有平台 `cookies` 和 `api_user`：
+
+```json
+{
+  "provider": "agentrouter",
+  "name": "AgentRouter主账号",
+  "api_user": "12345",
+  "cookies": {"session": "该平台账号的有效session"},
+  "github_cookies": {
+    "user_session": "对应GitHub账号的登录Cookie",
+    "__Host-user_session_same_site": "同一GitHub账号的对应Cookie"
+  }
+}
+```
+
+GitHub 登录 Cookie 具有账号登录权限，需要账号所有者明确授权后才能保存到云端 Secret。两个账号必须分别配置，`gh` 的 OAuth token 不能代替浏览器 Cookie。代码只向 `github.com` 注入必要的 Cookie，使用临时浏览器上下文，不保存 GitHub profile、截图、OAuth 回调地址或响应正文。登录失效或遇到 GitHub 人工验证时，工作流明确失败，需要更新对应会话。原平台 session 也需有效，才能在重新登录前读取奖励基线。
+
+每轮运行上传 `proxy-refresh-运行编号` 和 `checkin-proof-运行编号` 两份脱敏回执。前者证明节点刷新，后者按配置顺序记录结果、额度和 `rewardVerified`；Actions 绿灯或冷却状态均不能单独证明本轮获得了奖励。
+
 ## ⚙️ 配置 GitHub Secrets
 
 进入你 Fork 的仓库，依次点击：`Settings` → `Environments` → `production` → `Environment secrets`，更新 `ANYROUTER_ACCOUNTS`。
