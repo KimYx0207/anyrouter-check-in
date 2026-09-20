@@ -63,6 +63,7 @@ async def login_agentrouter_with_github(account, account_name: str, provider) ->
 	context = None
 	stage = 'browser'
 	page = None
+	oauth_trace = []
 	try:
 		context = await launch_login_context(settings, use_proxy=provider.use_proxy)
 		await context.add_cookies(cookies)
@@ -88,6 +89,9 @@ async def login_agentrouter_with_github(account, account_name: str, provider) ->
 		async def on_response(response):
 			nonlocal callback_ok
 			url = urlsplit(response.url)
+			if url.scheme == 'https' and url.netloc == 'agentrouter.org':
+				if url.path in {'/oauth/github', '/api/oauth/github', '/login'}:
+					oauth_trace.append(f'{url.path}:{response.status}')
 			if url.scheme != 'https' or url.netloc != 'agentrouter.org' or url.path != '/api/oauth/github':
 				return
 			try:
@@ -189,7 +193,7 @@ async def login_agentrouter_with_github(account, account_name: str, provider) ->
 				pass
 		raise GithubOAuthError(
 			f'GitHub OAuth 未完成（{type(error).__name__}; stage={stage}; page={host}{path}; authorize={button_state}），'
-			'请检查会话有效性和站点验证'
+			f'provider-trace={",".join(oauth_trace[-6:]) or "none"}'
 		) from None
 	finally:
 		if context is not None:
