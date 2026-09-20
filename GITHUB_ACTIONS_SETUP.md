@@ -48,6 +48,8 @@ AgentRouter 查询 `/api/user/self` 成功只证明会话有效，不能作为�
 
 GitHub 登录 Cookie 具有账号登录权限，需要账号所有者明确授权后才能保存到云端 Secret。两个账号必须分别配置，`gh` 的 OAuth token 不能代替浏览器 Cookie。代码只向 `github.com` 注入必要的 Cookie，使用临时浏览器上下文，不保存 GitHub profile、截图、OAuth 回调地址或响应正文。登录失效或遇到 GitHub 人工验证时，工作流明确失败，需要更新对应会话。原平台 session 也需有效，才能在重新登录前读取奖励基线。
 
+完成 GitHub 设备验证后，`github_cookies` 可同时包含同一浏览器会话的 `_device_id`，以保留与该登录态对应的设备标识。
+
 每轮运行上传 `proxy-refresh-运行编号` 和 `checkin-proof-运行编号` 两份脱敏回执。前者证明节点刷新，后者按配置顺序记录结果、额度和 `rewardVerified`；Actions 绿灯或冷却状态均不能单独证明本轮获得了奖励。
 
 ## ⚙️ 配置 GitHub Secrets

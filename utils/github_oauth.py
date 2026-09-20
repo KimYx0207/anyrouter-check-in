@@ -19,7 +19,7 @@ class GithubOAuthError(ValueError):
 def github_browser_cookies(cookies: dict | None) -> list[dict]:
 	if not isinstance(cookies, dict) or not cookies.get('user_session'):
 		raise GithubOAuthError('AgentRouter 需要 GitHub OAuth 重新登录；请配置该账号的 github_cookies')
-	allowed = {'user_session', '__Host-user_session_same_site', 'logged_in', 'dotcom_user'}
+	allowed = {'user_session', '__Host-user_session_same_site', 'logged_in', 'dotcom_user', '_device_id'}
 	result = []
 	for name in allowed:
 		if name not in cookies:

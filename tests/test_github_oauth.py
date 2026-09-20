@@ -94,6 +94,12 @@ def test_only_github_auth_cookies_are_injected_and_only_on_github():
 	assert 'provider-secret' not in json.dumps(cookies)
 
 
+def test_github_device_cookie_is_kept_with_the_authorized_session():
+	cookies = github_oauth.github_browser_cookies({'user_session': 'fake', '_device_id': 'fake-device'})
+	assert {item['name'] for item in cookies} == {'user_session', '_device_id'}
+	assert all(item['url'] == 'https://github.com/' for item in cookies)
+
+
 @pytest.mark.parametrize('value', [None, {}, {'user_session': ''}, {'user_session': 'secret\nvalue'}, 'secret'])
 def test_invalid_cookies_fail_without_exposing_input(value):
 	with pytest.raises(github_oauth.GithubOAuthError) as error:
